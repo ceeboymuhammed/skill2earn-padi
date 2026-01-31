@@ -17,7 +17,7 @@ export default function Home() {
             />
             <div>
               <div className="fw-bold text-primary">Skill2Earn Padi</div>
-              <div className="text-muted small">Skills that pay — with nearby training</div>
+              <div className="text-muted small">Own Your Skills with the closest trainers</div>
             </div>
           </div>
 
@@ -34,18 +34,18 @@ export default function Home() {
         <div className="row align-items-center g-4">
           <div className="col-12 col-lg-6">
             <div className="badge text-bg-light border mb-3">
-              🇳🇬 Built for Nigeria realities (power, device, access)
+              🇳🇬 Built for Nigeria realities (power, device, budget)
             </div>
 
             <h1 className="display-6 fw-bold lh-sm">
-              Get 3 realistic skill recommendations — and the closest verified trainers.
+              Get your most realistic skill recommendations and the closest verified trainers.
             </h1>
 
             <p className="text-muted mt-3" style={{ fontSize: 16, lineHeight: 1.7 }}>
               People waste months choosing skills based on hype. Skill2Earn Padi recommends skills based on your
-              <strong> location</strong>, <strong>power supply</strong>, <strong>device</strong>, <strong>budget</strong>,
-              <strong>time</strong>, and <strong>personality</strong> — then shows training centres near you (minimum{" "}
-              <strong>10% physical</strong> delivery).
+              <strong> location</strong>, <strong>power supply</strong>, <strong>device</strong>, <strong>budget</strong>, 
+              <strong>time</strong>, and <strong>personality</strong> then show you training centres near you (with{" "}
+              <strong>virtual or physical</strong> delivery).
             </p>
 
             <div className="d-grid gap-2 d-sm-flex mt-4">
@@ -58,7 +58,7 @@ export default function Home() {
             </div>
 
             <div className="mt-3 text-muted small">
-              Launch locations: <span className="fw-semibold">Abuja, Karu Site, Suleja, Lokoja</span>
+              Launch locations: <span className="fw-semibold">Abuja, Lagos, Kano, Portharcourt</span>
             </div>
           </div>
 
@@ -75,14 +75,14 @@ export default function Home() {
                   <div className="p-3 rounded-3" style={{ background: "#f7f4ff" }}>
                     <div className="fw-semibold">1) Quick assessment</div>
                     <div className="text-muted small mt-1">
-                      Answer questions about your resources, education/experience, distractions, and personality.
+                      Answer questions honestly about your resources, education/experience, distractions, and personality.
                     </div>
                   </div>
 
                   <div className="p-3 rounded-3" style={{ background: "#f7f4ff" }}>
                     <div className="fw-semibold">2) Preview top skills</div>
                     <div className="text-muted small mt-1">
-                      You’ll see a preview first — full results unlock after.
+                      You’ll see a preview first, then full results unlock after.
                     </div>
                   </div>
 
