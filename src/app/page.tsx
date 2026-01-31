@@ -17,7 +17,7 @@ export default function Home() {
             />
             <div>
               <div className="fw-bold text-primary">Skill2Earn Padi</div>
-              <div className="text-muted small">Own Your Skills with the closest trainers</div>
+              <div className="text-muted small">Own Your Skills from the closest trainers</div>
             </div>
           </div>
 

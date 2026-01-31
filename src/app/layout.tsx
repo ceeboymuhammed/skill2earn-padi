@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Skill2Earn-Padi",
   description: "Nigeria premier skill recormendation engine for youth",
-};
+  };
 
 export default function RootLayout({
   children,
