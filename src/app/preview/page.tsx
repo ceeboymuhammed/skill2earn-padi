@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 type PreviewRec = {
   skill_code: string;
@@ -98,9 +98,16 @@ function isFullResp(x: unknown): x is FullResp {
   return x.mode === "full" && typeof x.session_id === "string" && Array.isArray(x.recommendations);
 }
 
+function getPayLink(): string | null {
+  const link = process.env.NEXT_PUBLIC_FLW_PAY_LINK;
+  if (!link) return null;
+  const trimmed = link.trim();
+  return trimmed.length ? trimmed : null;
+}
+
 export default function PreviewPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const couponBoxRef = useRef<HTMLDivElement | null>(null);
 
   const [resp, setResp] = useState<PreviewResp | null>(null);
   const [assessment, setAssessment] = useState<AssessmentStored | null>(null);
@@ -114,12 +121,12 @@ export default function PreviewPage() {
 
   const [unlockLoading, setUnlockLoading] = useState(false);
 
-  // Coupon UI state
+  // Coupon UI
   const [couponCode, setCouponCode] = useState("");
   const [couponLoading, setCouponLoading] = useState(false);
   const [couponMsg, setCouponMsg] = useState<string | null>(null);
 
-  // Pay UI state
+  // Pay UI
   const [payLoading, setPayLoading] = useState(false);
 
   useEffect(() => {
@@ -133,10 +140,8 @@ export default function PreviewPage() {
       return;
     }
 
-    // If flutterwave redirected back with session_id, respect it
-    const qsSession = searchParams.get("session_id") || null;
     const storedSession = localStorage.getItem(SESSION_KEY);
-    const session_id = qsSession || storedSession || r.session_id || a?.session_id;
+    const session_id = storedSession || r.session_id || a?.session_id;
 
     if (!session_id) {
       setResp(null);
@@ -145,22 +150,9 @@ export default function PreviewPage() {
     }
 
     localStorage.setItem(SESSION_KEY, session_id);
-
-    // Show payment status message if any
-    const payStatus = searchParams.get("pay_status");
-    if (payStatus) {
-      if (payStatus === "successful") {
-        setCouponMsg("✅ Payment successful. Tap “Show my full results”.");
-      } else if (payStatus === "failed") {
-        setCouponMsg("❌ Payment failed or cancelled. Please try again.");
-      } else {
-        setCouponMsg(`Payment status: ${payStatus}. Tap “Show my full results” if you were charged.`);
-      }
-    }
-
     setResp({ ...r, session_id });
     setError(null);
-  }, [searchParams]);
+  }, []);
 
   const top = useMemo(() => resp?.recommendations?.slice(0, 3) ?? [], [resp]);
   const topSkillCode = top[0]?.skill_code ?? null;
@@ -204,7 +196,7 @@ export default function PreviewPage() {
       if (isPreviewResp(json)) {
         localStorage.setItem(PREVIEW_KEY, JSON.stringify(json));
         setResp(json);
-        setError("Still locked. Use payment or coupon to unlock, then tap “Show my full results”.");
+        setError("Still locked. Enter your coupon code to unlock full results.");
         return;
       }
 
@@ -216,57 +208,20 @@ export default function PreviewPage() {
     }
   }
 
-  async function startPayment() {
+  function startPayment() {
     setError(null);
     setCouponMsg(null);
 
-    const a = safeParse<AssessmentStored>(localStorage.getItem(ASSESS_KEY));
-    const session_id = localStorage.getItem(SESSION_KEY) || a?.session_id || resp?.session_id;
-
-    if (!a || !session_id) {
-      setError("Missing assessment/session. Please retake the assessment.");
-      return;
-    }
-
-    if (!a.email || !a.full_name) {
-      setError("Missing name/email. Please retake the assessment.");
+    const link = getPayLink();
+    if (!link) {
+      setError("Missing NEXT_PUBLIC_FLW_PAY_LINK in .env.local");
       return;
     }
 
     setPayLoading(true);
-    try {
-      const res = await fetch("/api/pay/flutterwave/initiate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_id,
-          email: a.email,
-          full_name: a.full_name,
-          phone: a.phone,
-        }),
-      });
 
-      const json = (await res.json()) as unknown;
-
-      if (!res.ok) {
-        const msg = getApiErrorMessage(json) ?? "Unable to start payment.";
-        setError(msg);
-        return;
-      }
-
-      const link = isObj(json) && typeof json.link === "string" ? json.link : null;
-      if (!link) {
-        setError("Payment link missing. Please try again.");
-        return;
-      }
-
-      // Go to Flutterwave checkout
-      window.location.href = link;
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Unknown error");
-    } finally {
-      setPayLoading(false);
-    }
+    // Open Flutterwave link in same tab (or use window.open for new tab)
+    window.location.href = link;
   }
 
   async function verifyCoupon() {
@@ -302,7 +257,6 @@ export default function PreviewPage() {
       }
 
       setCouponMsg("✅ Coupon verified. You’re unlocked — tap “Show my full results”.");
-      // Update local preview state to reflect unlocked (UI-only)
       if (resp) setResp({ ...resp, unlocked: true });
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Unknown error");
@@ -361,6 +315,10 @@ export default function PreviewPage() {
     router.push("/assessment");
   }
 
+  function scrollToCoupon() {
+    couponBoxRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   return (
     <div className="bg-light min-vh-100">
       <div className="bg-white border-bottom">
@@ -388,7 +346,7 @@ export default function PreviewPage() {
                   Your best skill path is here — <span className="text-primary">unlock</span> to see everything.
                 </h1>
                 <p className="text-muted mb-0">
-                  This preview shows your top matches. Full Results unlocks the complete breakdown + training centres closest to you.
+                  Pay to get a coupon on WhatsApp, then come back here and apply the coupon to unlock full results.
                 </p>
               </div>
 
@@ -405,24 +363,29 @@ export default function PreviewPage() {
               </div>
             </div>
 
-            {/* TWO MAIN ACTIONS */}
             <div className="row g-3 mt-4">
               <div className="col-12 col-lg-6">
                 <div className="p-3 border rounded h-100 bg-white">
-                  <div className="fw-semibold mb-1">Option 1: Pay to unlock</div>
+                  <div className="fw-semibold mb-1">Option 1: Pay to get your coupon</div>
                   <div className="text-muted small mb-3">
-                    You’ll be redirected to Flutterwave. After successful payment, come back and tap “Show my full results”.
+                    After successful payment, Flutterwave redirects you to WhatsApp (+2348026521855) to collect your coupon.
+                    Then return to this page and apply it.
                   </div>
+
                   <button className="btn btn-primary btn-lg w-100" onClick={startPayment} disabled={payLoading}>
-                    {payLoading ? "Starting payment..." : "Pay to Unlock Full Results"}
+                    {payLoading ? "Redirecting..." : "Pay to Unlock (Get Coupon on WhatsApp)"}
+                  </button>
+
+                  <button className="btn btn-outline-primary w-100 mt-2" onClick={scrollToCoupon}>
+                    I already have my coupon — enter it now
                   </button>
                 </div>
               </div>
 
-              <div className="col-12 col-lg-6">
+              <div className="col-12 col-lg-6" ref={couponBoxRef}>
                 <div className="p-3 border rounded h-100 bg-white">
-                  <div className="fw-semibold mb-1">Option 2: Use coupon</div>
-                  <div className="text-muted small mb-2">Enter your coupon code to unlock instantly.</div>
+                  <div className="fw-semibold mb-1">Option 2: Enter coupon</div>
+                  <div className="text-muted small mb-2">Paste the coupon you received on WhatsApp.</div>
 
                   <div className="d-flex gap-2">
                     <input
@@ -437,15 +400,11 @@ export default function PreviewPage() {
                   </div>
 
                   <div className="mt-3">
-                    <button
-                      className="btn btn-success btn-lg w-100"
-                      onClick={tryLoadFullResults}
-                      disabled={unlockLoading}
-                    >
+                    <button className="btn btn-success btn-lg w-100" onClick={tryLoadFullResults} disabled={unlockLoading}>
                       {unlockLoading ? "Loading..." : "Show my full results"}
                     </button>
                     <div className="text-muted small text-center mt-2">
-                      After payment/coupon unlock, tap this button to load results.
+                      Verify coupon first, then tap “Show my full results”.
                     </div>
                   </div>
                 </div>
@@ -531,7 +490,7 @@ export default function PreviewPage() {
                 Submit Feedback
               </button>
               <button className="btn btn-outline-primary" onClick={startPayment} disabled={payLoading}>
-                {payLoading ? "Starting payment..." : "Pay to Unlock"}
+                {payLoading ? "Redirecting..." : "Pay (Get Coupon on WhatsApp)"}
               </button>
             </div>
           </div>

@@ -213,3 +213,76 @@ export async function recommendWithGeminiOrFallback(
     return runRecommendationPipeline(user, skills);
   }
 }
+import { FullResultsResponseSchema, fullResultsJsonSchema, type FullSkillReport } from "@/lib/llmSchema";
+
+function buildFullResultsInstruction() {
+  return `
+Return ONLY valid JSON matching the provided schema. No markdown. No extra keys.
+
+Input:
+- userAssessment (answers + location)
+- top3 (exactly 3 items), each has: recommendation + skillRow
+
+Rules:
+- Output recommendations must be exactly 3 items and in the same order as input top3.
+- match_score must equal recommendation.score (integer 0..100).
+- skill_name must equal skillRow.name.
+- vibe_check.work_mode must equal skillRow.work_location.
+- Costs must be realistic for Nigeria and consistent with skillRow.min_budget_naira.
+- Include this exact sentence in next_steps.training_centre_note:
+"We can connect you to the nearest training centre to your location within 48 hours if you are ready to get started now."
+`.trim();
+}
+
+type FullTop3Input = {
+  userAssessment: AssessmentPayload;
+  top3: Array<{
+    recommendation: Recommendation;
+    skillRow: SkillRow;
+  }>;
+};
+
+export async function buildFullReportsWithGemini(
+  user: AssessmentPayload,
+  top3Recs: Recommendation[],
+  allSkills: SkillRow[]
+): Promise<FullSkillReport[]> {
+  const byCode = new Map(allSkills.map((s) => [s.skill_code, s]));
+
+  const top3 = top3Recs.slice(0, 3).map((r) => {
+    const skillRow = byCode.get(r.skill_code);
+    if (!skillRow) throw new Error(`Missing skillRow for ${r.skill_code}`);
+    return { recommendation: r, skillRow };
+  });
+
+  if (top3.length !== 3) throw new Error("Expected exactly 3 recommendations");
+
+  const input: FullTop3Input = {
+    userAssessment: user,
+    top3,
+  };
+
+  const ai = getGeminiClient();
+  const model = getGeminiModel();
+
+  const resp = await ai.models.generateContent({
+    model,
+    contents: [
+      { role: "user", parts: [{ text: buildFullResultsInstruction() }] },
+      { role: "user", parts: [{ text: JSON.stringify(input) }] },
+    ],
+    config: {
+      temperature: 0.35,
+      responseMimeType: "application/json",
+      responseSchema: fullResultsJsonSchema(),
+    },
+  });
+
+  const text = resp.text ?? "";
+  if (!text) throw new Error("Gemini returned empty text");
+
+  const parsed = JSON.parse(text) as unknown;
+  const validated = FullResultsResponseSchema.parse(parsed);
+
+  return validated.recommendations;
+}
