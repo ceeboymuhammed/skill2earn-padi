@@ -38,7 +38,7 @@ export default function Home() {
             </div>
 
             <h1 className="display-6 fw-bold lh-sm">
-              Get your most realistic skill recommendations and the closest verified trainers.
+            Discover the one SKILL built for your CURRENT budget and lifestyle.
             </h1>
 
             <p className="text-muted mt-3" style={{ fontSize: 16, lineHeight: 1.7 }}>
@@ -89,7 +89,7 @@ export default function Home() {
                   <div className="p-3 rounded-3" style={{ background: "#f7f4ff" }}>
                     <div className="fw-semibold">3) Full results + providers</div>
                     <div className="text-muted small mt-1">
-                      See reasons + nearest verified training options in your area.
+                      See full details about the skill + reasons + nearest verified training options in your area.
                     </div>
                   </div>
                 </div>
@@ -106,7 +106,7 @@ export default function Home() {
             </div>
 
             <div className="text-muted small mt-3 text-center text-lg-start">
-              This is a beta. Some areas may have limited verified providers.
+              This is a beta. Some areas may have limited verified providers for now.
             </div>
           </div>
         </div>

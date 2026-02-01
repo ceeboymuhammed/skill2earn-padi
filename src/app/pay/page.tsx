@@ -19,6 +19,14 @@ function safeParse<T>(raw: string | null): T | null {
   }
 }
 
+function getApiErrorMessage(json: unknown): string | null {
+  if (!json || typeof json !== "object") return null;
+  const obj = json as Record<string, unknown>;
+  if (typeof obj.message === "string") return obj.message;
+  if (typeof obj.error === "string") return obj.error;
+  return null;
+}
+
 export default function PayPage() {
   const router = useRouter();
 
@@ -92,16 +100,24 @@ export default function PayPage() {
       });
 
       const json = (await res.json()) as unknown;
-      const obj = (json && typeof json === "object") ? (json as Record<string, unknown>) : {};
-      const ok = Boolean(obj.ok);
 
-      if (!res.ok || !ok) {
-        const msg = typeof obj.message === "string" ? obj.message : "Unlock failed";
+      if (!res.ok) {
+        const msg = getApiErrorMessage(json) ?? "Unlock failed";
         throw new Error(msg);
       }
 
-      setOkMsg("Unlocked successfully! Redirecting...");
-      router.push("/results");
+      // expect { ok: true }
+     const ok = typeof json === "object" && json !== null && Boolean((json as Record<string, unknown>).ok);
+
+      if (!ok) {
+        const msg = getApiErrorMessage(json) ?? "Unlock failed";
+        throw new Error(msg);
+      }
+
+      setOkMsg("Unlocked successfully! Loading your full results...");
+
+      // ✅ best flow: go to preview, let it fetch full, store s2e_last_full, then route to /results
+      router.push("/preview?paid=1");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Unlock failed");
     } finally {
@@ -118,7 +134,6 @@ export default function PayPage() {
       return;
     }
 
-    // Optional: append session id so you can match payer later
     const url = new URL(paymentLink);
     if (sessionId) url.searchParams.set("s2e_session_id", sessionId);
 
@@ -220,6 +235,13 @@ export default function PayPage() {
               <button className="btn btn-primary w-100 btn-lg" onClick={openPaymentLink}>
                 Pay with Flutterwave (Payment Link)
               </button>
+
+              <div className="d-grid gap-2 mt-3">
+                {/* Optional helper for manual unlock */}
+                <button className="btn btn-outline-primary" onClick={() => router.push("/preview?paid=1")}>
+                  I already paid — check unlock
+                </button>
+              </div>
 
               <div className="text-muted small mt-2">
                 Session: <code>{sessionId || "not found"}</code>

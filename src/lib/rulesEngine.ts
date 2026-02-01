@@ -132,7 +132,19 @@ function isDigitalish(skill: SkillRow): boolean {
 
   const cat = (skill.category || "").toLowerCase();
   const ind = (skill.industry || "").toLowerCase();
-  const keywords = ["digital", "tech", "data", "software", "program", "design", "ui", "ux", "analytics", "cyber", "network"];
+  const keywords = [
+    "digital",
+    "tech",
+    "data",
+    "software",
+    "program",
+    "design",
+    "ui",
+    "ux",
+    "analytics",
+    "cyber",
+    "network",
+  ];
   return keywords.some((k) => cat.includes(k) || ind.includes(k));
 }
 
@@ -318,7 +330,9 @@ export function runRecommendationPipeline(user: AssessmentPayload, skills: Skill
     const topSkillCode = out[0].skill_code;
     const topSkill = scored.find((x) => x.skill.skill_code === topSkillCode)?.skill;
     if (topSkill?.time_to_earn_months && topSkill.time_to_earn_months > 3) {
-      out[0].warnings.push(`Consider also: ${out[1].skill_name} as a faster-earning backup while you build your top skill.`);
+      out[0].warnings.push(
+        `Consider also: ${out[1].skill_name} as a faster-earning backup while you build your top skill.`
+      );
     }
   }
 

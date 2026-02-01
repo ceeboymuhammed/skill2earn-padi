@@ -1,122 +1,70 @@
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { createClient } from "@supabase/supabase-js";
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
 
 const Schema = z.object({
-  session_id: z.string().min(6),
+  session_id: z.string().min(10),
   email: z.string().email(),
-  name: z.string().min(2),
+  full_name: z.string().min(2),
   phone: z.string().optional(),
 });
 
-// Response types (no any)
-type RespOk = { ok: true; link: string; tx_ref: string };
-type RespErr = { ok: false; message: string; debug?: unknown };
-type Resp = RespOk | RespErr;
-
-function safeJsonParse(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { raw: text };
-  }
-}
-
-function pickMessageFromUnknown(u: unknown, fallback: string): string {
-  if (!u || typeof u !== "object") return fallback;
-  const o = u as Record<string, unknown>;
-  if (typeof o.message === "string" && o.message.trim()) return o.message;
-  if (typeof o.error === "string" && o.error.trim()) return o.error;
-  return fallback;
+function getBaseUrl(req: Request) {
+  // Always correct in dev/prod
+  return new URL(req.url).origin;
 }
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { session_id, email, name, phone } = Schema.parse(body);
+    const { session_id, email, full_name } = Schema.parse(body);
 
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-    const secret = process.env.FLW_SECRET_KEY;
+    const flwKey = process.env.FLW_SECRET_KEY;
+    if (!flwKey) return NextResponse.json({ message: "Missing FLW_SECRET_KEY" }, { status: 500 });
 
-    if (!appUrl) {
-      return NextResponse.json<Resp>({ ok: false, message: "Missing NEXT_PUBLIC_APP_URL" }, { status: 500 });
-    }
-    if (!secret) {
-      return NextResponse.json<Resp>({ ok: false, message: "Missing FLW_SECRET_KEY" }, { status: 500 });
-    }
+    const baseUrl = process.env.APP_URL || getBaseUrl(req);
 
-    const REQUIRED_AMOUNT = 1999;
-    const tx_ref = `S2E-${session_id}-${Date.now()}`;
+    // TODO: set your real amount/currency
+    const amount = 2000; // NGN
+    const currency = "NGN";
 
-    // ensure session exists + track tx_ref
-    await supabase.from("sessions").upsert({ session_id }, { onConflict: "session_id" });
-    await supabase
-      .from("sessions")
-      .update({
-        flw_tx_ref: tx_ref,
-        amount_paid_ngn: REQUIRED_AMOUNT,
-        payment_status: "initiated",
-      })
-      .eq("session_id", session_id);
+    const tx_ref = `s2e_${session_id}_${Date.now()}`;
 
-    const flwRes = await fetch("https://api.flutterwave.com/v3/payments", {
+    const payload = {
+      tx_ref,
+      amount,
+      currency,
+      redirect_url: `${baseUrl}/api/pay/flutterwave/callback?session_id=${encodeURIComponent(session_id)}`,
+      customer: { email, name: full_name },
+      customizations: {
+        title: "Skill2Earn Padi",
+        description: "Unlock Full Results",
+      },
+    };
+
+    const resp = await fetch("https://api.flutterwave.com/v3/payments", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${secret}`,
+        Authorization: `Bearer ${flwKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        tx_ref,
-        amount: REQUIRED_AMOUNT,
-        currency: "NGN",
-        redirect_url: `${appUrl}/pay/callback`,
-        customer: {
-          email,
-          name,
-          phonenumber: phone ?? "",
-        },
-        meta: { session_id },
-        customizations: {
-          title: "Skill2Earn Padi",
-          description: "Unlock full recommendations & nearest training centres",
-        },
-      }),
+      body: JSON.stringify(payload),
     });
 
-    const text = await flwRes.text();
-    const flwJson = safeJsonParse(text);
+    const json = await resp.json();
 
-    if (!flwRes.ok) {
-      const msg = pickMessageFromUnknown(flwJson, `Flutterwave init failed: HTTP ${flwRes.status}`);
-      return NextResponse.json<Resp>({ ok: false, message: msg, debug: flwJson }, { status: 400 });
+    if (!resp.ok) {
+      return NextResponse.json({ message: json?.message ?? "Flutterwave init failed", raw: json }, { status: 500 });
     }
 
-    // Extract link safely
-    if (!flwJson || typeof flwJson !== "object") {
-      return NextResponse.json<Resp>(
-        { ok: false, message: "Flutterwave returned invalid response", debug: flwJson },
-        { status: 400 }
-      );
-    }
+    const link = json?.data?.link;
+    if (!link) return NextResponse.json({ message: "Missing Flutterwave payment link" }, { status: 500 });
 
-    const data = (flwJson as Record<string, unknown>).data as Record<string, unknown> | undefined;
-    const link = typeof data?.link === "string" ? data.link : "";
-
-    if (!link) {
-      return NextResponse.json<Resp>(
-        { ok: false, message: "No checkout link returned by Flutterwave", debug: flwJson },
-        { status: 400 }
-      );
-    }
-
-    return NextResponse.json<RespOk>({ ok: true, link, tx_ref });
+    return NextResponse.json({ ok: true, link });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Unknown error";
-    return NextResponse.json<Resp>({ ok: false, message: msg }, { status: 400 });
+    return NextResponse.json({ message: msg }, { status: 500 });
   }
 }

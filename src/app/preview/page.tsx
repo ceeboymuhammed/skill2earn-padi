@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 type PreviewRec = {
   skill_code: string;
@@ -11,21 +11,62 @@ type PreviewRec = {
 };
 
 type PreviewResp = {
-  session_id: string | null;
+  session_id: string;
   unlocked: boolean;
   mode: "preview";
   recommendations: PreviewRec[];
 };
 
+type FullRec = {
+  skill_code: string;
+  skill_name: string;
+  score: number;
+  reasons: string[];
+  badges: string[];
+  warnings: string[];
+};
+
+type FullResp = {
+  session_id: string;
+  unlocked: boolean;
+  mode: "full";
+  recommendations: FullRec[];
+};
+
 type AssessmentStored = {
   session_id?: string;
+
   state?: string;
   city?: string;
   area?: string;
+
+  full_name?: string;
+  email?: string;
+  phone?: string;
+
+  equipment_access?: string;
+  computer_proficiency?: number;
+
+  seed_capital?: string;
+  utility_reliability?: string;
+
+  workspace_preference?: string;
+  social_battery?: string;
+  mobility?: string;
+
+  problem_instinct?: string;
+  math_logic_comfort?: string;
+  patience_level?: string;
+  learning_style?: string;
+
+  income_urgency?: string;
+  primary_interest?: string;
 };
 
 const PREVIEW_KEY = "s2e_last_preview";
+const FULL_KEY = "s2e_last_full";
 const ASSESS_KEY = "s2e_last_assessment";
+const SESSION_KEY = "s2e_session_id";
 
 function safeParse<T>(raw: string | null): T | null {
   if (!raw) return null;
@@ -36,8 +77,30 @@ function safeParse<T>(raw: string | null): T | null {
   }
 }
 
+function isObj(x: unknown): x is Record<string, unknown> {
+  return !!x && typeof x === "object";
+}
+
+function getApiErrorMessage(json: unknown): string | null {
+  if (!isObj(json)) return null;
+  if (typeof json.message === "string") return json.message;
+  if (typeof json.error === "string") return json.error;
+  return null;
+}
+
+function isPreviewResp(x: unknown): x is PreviewResp {
+  if (!isObj(x)) return false;
+  return x.mode === "preview" && typeof x.session_id === "string" && Array.isArray(x.recommendations);
+}
+
+function isFullResp(x: unknown): x is FullResp {
+  if (!isObj(x)) return false;
+  return x.mode === "full" && typeof x.session_id === "string" && Array.isArray(x.recommendations);
+}
+
 export default function PreviewPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   const [resp, setResp] = useState<PreviewResp | null>(null);
   const [assessment, setAssessment] = useState<AssessmentStored | null>(null);
@@ -49,24 +112,204 @@ export default function PreviewPage() {
   const [whatLiked, setWhatLiked] = useState("");
   const [whatWrong, setWhatWrong] = useState("");
 
-  useEffect(() => {
-    const r = safeParse<PreviewResp>(localStorage.getItem(PREVIEW_KEY));
-    const a = safeParse<AssessmentStored>(localStorage.getItem(ASSESS_KEY));
+  const [unlockLoading, setUnlockLoading] = useState(false);
 
-    if (!r || r.mode !== "preview" || !Array.isArray(r.recommendations)) {
+  // Coupon UI state
+  const [couponCode, setCouponCode] = useState("");
+  const [couponLoading, setCouponLoading] = useState(false);
+  const [couponMsg, setCouponMsg] = useState<string | null>(null);
+
+  // Pay UI state
+  const [payLoading, setPayLoading] = useState(false);
+
+  useEffect(() => {
+    const a = safeParse<AssessmentStored>(localStorage.getItem(ASSESS_KEY));
+    setAssessment(a);
+
+    const r = safeParse<unknown>(localStorage.getItem(PREVIEW_KEY));
+    if (!isPreviewResp(r)) {
       setResp(null);
-      setAssessment(a);
       setError("No preview results found. Please complete the assessment again.");
       return;
     }
 
-    setResp(r);
-    setAssessment(a);
+    // If flutterwave redirected back with session_id, respect it
+    const qsSession = searchParams.get("session_id") || null;
+    const storedSession = localStorage.getItem(SESSION_KEY);
+    const session_id = qsSession || storedSession || r.session_id || a?.session_id;
+
+    if (!session_id) {
+      setResp(null);
+      setError("No session found. Please complete the assessment again.");
+      return;
+    }
+
+    localStorage.setItem(SESSION_KEY, session_id);
+
+    // Show payment status message if any
+    const payStatus = searchParams.get("pay_status");
+    if (payStatus) {
+      if (payStatus === "successful") {
+        setCouponMsg("✅ Payment successful. Tap “Show my full results”.");
+      } else if (payStatus === "failed") {
+        setCouponMsg("❌ Payment failed or cancelled. Please try again.");
+      } else {
+        setCouponMsg(`Payment status: ${payStatus}. Tap “Show my full results” if you were charged.`);
+      }
+    }
+
+    setResp({ ...r, session_id });
     setError(null);
-  }, []);
+  }, [searchParams]);
 
   const top = useMemo(() => resp?.recommendations?.slice(0, 3) ?? [], [resp]);
   const topSkillCode = top[0]?.skill_code ?? null;
+
+  async function tryLoadFullResults() {
+    setError(null);
+    setSavedMsg(null);
+
+    const a = safeParse<AssessmentStored>(localStorage.getItem(ASSESS_KEY));
+    const session_id = localStorage.getItem(SESSION_KEY) || a?.session_id || resp?.session_id;
+
+    if (!a || !session_id) {
+      setError("Missing assessment data. Please retake the assessment.");
+      return;
+    }
+
+    setUnlockLoading(true);
+    try {
+      const payload = { ...a, session_id, mode: "full" as const };
+
+      const res = await fetch("/api/recommend", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const json = (await res.json()) as unknown;
+
+      if (!res.ok) {
+        const msg = getApiErrorMessage(json) ?? "Unable to load full results yet.";
+        setError(msg);
+        return;
+      }
+
+      if (isFullResp(json)) {
+        localStorage.setItem(FULL_KEY, JSON.stringify(json));
+        router.push("/results");
+        return;
+      }
+
+      if (isPreviewResp(json)) {
+        localStorage.setItem(PREVIEW_KEY, JSON.stringify(json));
+        setResp(json);
+        setError("Still locked. Use payment or coupon to unlock, then tap “Show my full results”.");
+        return;
+      }
+
+      setError("Unexpected response. Please try again.");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setUnlockLoading(false);
+    }
+  }
+
+  async function startPayment() {
+    setError(null);
+    setCouponMsg(null);
+
+    const a = safeParse<AssessmentStored>(localStorage.getItem(ASSESS_KEY));
+    const session_id = localStorage.getItem(SESSION_KEY) || a?.session_id || resp?.session_id;
+
+    if (!a || !session_id) {
+      setError("Missing assessment/session. Please retake the assessment.");
+      return;
+    }
+
+    if (!a.email || !a.full_name) {
+      setError("Missing name/email. Please retake the assessment.");
+      return;
+    }
+
+    setPayLoading(true);
+    try {
+      const res = await fetch("/api/pay/flutterwave/initiate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id,
+          email: a.email,
+          full_name: a.full_name,
+          phone: a.phone,
+        }),
+      });
+
+      const json = (await res.json()) as unknown;
+
+      if (!res.ok) {
+        const msg = getApiErrorMessage(json) ?? "Unable to start payment.";
+        setError(msg);
+        return;
+      }
+
+      const link = isObj(json) && typeof json.link === "string" ? json.link : null;
+      if (!link) {
+        setError("Payment link missing. Please try again.");
+        return;
+      }
+
+      // Go to Flutterwave checkout
+      window.location.href = link;
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setPayLoading(false);
+    }
+  }
+
+  async function verifyCoupon() {
+    setError(null);
+    setCouponMsg(null);
+
+    const session_id = localStorage.getItem(SESSION_KEY) || resp?.session_id || assessment?.session_id;
+    if (!session_id) {
+      setError("No session found. Please retake the assessment.");
+      return;
+    }
+
+    const code = couponCode.trim();
+    if (!code) {
+      setError("Enter a coupon code.");
+      return;
+    }
+
+    setCouponLoading(true);
+    try {
+      const res = await fetch("/api/verify-coupon", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id, coupon_code: code }),
+      });
+
+      const json = (await res.json()) as unknown;
+
+      if (!res.ok) {
+        const msg = getApiErrorMessage(json) ?? "Coupon verification failed.";
+        setError(msg);
+        return;
+      }
+
+      setCouponMsg("✅ Coupon verified. You’re unlocked — tap “Show my full results”.");
+      // Update local preview state to reflect unlocked (UI-only)
+      if (resp) setResp({ ...resp, unlocked: true });
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setCouponLoading(false);
+    }
+  }
 
   async function saveFeedback() {
     setSavedMsg(null);
@@ -82,16 +325,16 @@ export default function PreviewPage() {
     }
 
     try {
+      const session_id = localStorage.getItem(SESSION_KEY) || resp.session_id || assessment?.session_id || null;
+
       const res = await fetch("/api/feedback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          session_id: resp.session_id ?? assessment?.session_id ?? null,
-          rating, // narrowed to 1..5 here
-
+          session_id,
+          rating,
           whatLiked: whatLiked.trim() || undefined,
           whatWrong: whatWrong.trim() || undefined,
-
           top_skill_code: topSkillCode ?? undefined,
           state: assessment?.state,
           city: assessment?.city,
@@ -101,10 +344,7 @@ export default function PreviewPage() {
 
       const json = (await res.json()) as unknown;
       if (!res.ok) {
-        const msg =
-          json && typeof json === "object" && "message" in json
-            ? String((json as Record<string, unknown>).message)
-            : "Failed to submit feedback";
+        const msg = getApiErrorMessage(json) ?? "Failed to submit feedback";
         throw new Error(msg);
       }
 
@@ -114,19 +354,15 @@ export default function PreviewPage() {
     }
   }
 
-  function goPay() {
-    // Payment page will handle coupon + unlock
-    router.push("/pay");
-  }
-
   function redoAssessment() {
     localStorage.removeItem(PREVIEW_KEY);
+    localStorage.removeItem(FULL_KEY);
+    localStorage.removeItem(SESSION_KEY);
     router.push("/assessment");
   }
 
   return (
     <div className="bg-light min-vh-100">
-      {/* Header */}
       <div className="bg-white border-bottom">
         <div className="container py-3 d-flex align-items-center justify-content-between">
           <div>
@@ -141,8 +377,8 @@ export default function PreviewPage() {
 
       <div className="container py-4" style={{ maxWidth: 960 }}>
         {error && <div className="alert alert-danger">{error}</div>}
+        {couponMsg && <div className="alert alert-success">{couponMsg}</div>}
 
-        {/* Hero */}
         <div className="card shadow-sm border-0 mb-4">
           <div className="card-body p-4">
             <div className="row g-4 align-items-center">
@@ -152,8 +388,7 @@ export default function PreviewPage() {
                   Your best skill path is here — <span className="text-primary">unlock</span> to see everything.
                 </h1>
                 <p className="text-muted mb-0">
-                  This preview shows your top matches. Full Results unlocks the complete “Why this fits you” breakdown +
-                  training centres closest to you.
+                  This preview shows your top matches. Full Results unlocks the complete breakdown + training centres closest to you.
                 </p>
               </div>
 
@@ -170,18 +405,56 @@ export default function PreviewPage() {
               </div>
             </div>
 
-            <div className="d-grid gap-2 mt-4">
-              <button className="btn btn-primary btn-lg" onClick={goPay}>
-                Pay to Unlock Full Results (Coupons Available)
-              </button>
-              <div className="text-muted small text-center">
-                Early testers can use promo coupons to unlock access.
+            {/* TWO MAIN ACTIONS */}
+            <div className="row g-3 mt-4">
+              <div className="col-12 col-lg-6">
+                <div className="p-3 border rounded h-100 bg-white">
+                  <div className="fw-semibold mb-1">Option 1: Pay to unlock</div>
+                  <div className="text-muted small mb-3">
+                    You’ll be redirected to Flutterwave. After successful payment, come back and tap “Show my full results”.
+                  </div>
+                  <button className="btn btn-primary btn-lg w-100" onClick={startPayment} disabled={payLoading}>
+                    {payLoading ? "Starting payment..." : "Pay to Unlock Full Results"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="col-12 col-lg-6">
+                <div className="p-3 border rounded h-100 bg-white">
+                  <div className="fw-semibold mb-1">Option 2: Use coupon</div>
+                  <div className="text-muted small mb-2">Enter your coupon code to unlock instantly.</div>
+
+                  <div className="d-flex gap-2">
+                    <input
+                      className="form-control form-control-lg"
+                      placeholder="Enter coupon code"
+                      value={couponCode}
+                      onChange={(e) => setCouponCode(e.target.value)}
+                    />
+                    <button className="btn btn-outline-primary btn-lg" onClick={verifyCoupon} disabled={couponLoading}>
+                      {couponLoading ? "Verifying..." : "Verify"}
+                    </button>
+                  </div>
+
+                  <div className="mt-3">
+                    <button
+                      className="btn btn-success btn-lg w-100"
+                      onClick={tryLoadFullResults}
+                      disabled={unlockLoading}
+                    >
+                      {unlockLoading ? "Loading..." : "Show my full results"}
+                    </button>
+                    <div className="text-muted small text-center mt-2">
+                      After payment/coupon unlock, tap this button to load results.
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
+
           </div>
         </div>
 
-        {/* Preview cards */}
         <div className="row g-3 mb-4">
           {top.map((r) => (
             <div className="col-12 col-md-6 col-lg-4" key={r.skill_code}>
@@ -207,8 +480,8 @@ export default function PreviewPage() {
                 </div>
 
                 <div className="card-footer bg-white border-0 pt-0 pb-3 px-3">
-                  <button className="btn btn-outline-primary w-100" onClick={goPay}>
-                    Unlock Full Details
+                  <button className="btn btn-success w-100" onClick={tryLoadFullResults} disabled={unlockLoading}>
+                    {unlockLoading ? "Loading..." : "Show Full Details"}
                   </button>
                 </div>
               </div>
@@ -216,7 +489,6 @@ export default function PreviewPage() {
           ))}
         </div>
 
-        {/* Feedback */}
         <div className="card shadow-sm border-0 mb-4">
           <div className="card-body p-4">
             <h2 className="h5 mb-2">Rate the accuracy of these recommendations</h2>
@@ -246,21 +518,11 @@ export default function PreviewPage() {
             <div className="row g-3">
               <div className="col-12 col-md-6">
                 <label className="form-label fw-semibold">What did we get right? (optional)</label>
-                <textarea
-                  className="form-control"
-                  rows={4}
-                  value={whatLiked}
-                  onChange={(e) => setWhatLiked(e.target.value)}
-                />
+                <textarea className="form-control" rows={4} value={whatLiked} onChange={(e) => setWhatLiked(e.target.value)} />
               </div>
               <div className="col-12 col-md-6">
                 <label className="form-label fw-semibold">What did we miss? (optional)</label>
-                <textarea
-                  className="form-control"
-                  rows={4}
-                  value={whatWrong}
-                  onChange={(e) => setWhatWrong(e.target.value)}
-                />
+                <textarea className="form-control" rows={4} value={whatWrong} onChange={(e) => setWhatWrong(e.target.value)} />
               </div>
             </div>
 
@@ -268,29 +530,14 @@ export default function PreviewPage() {
               <button className="btn btn-primary" onClick={saveFeedback}>
                 Submit Feedback
               </button>
-              <button className="btn btn-outline-primary" onClick={goPay}>
-                Pay to Unlock Full Results
+              <button className="btn btn-outline-primary" onClick={startPayment} disabled={payLoading}>
+                {payLoading ? "Starting payment..." : "Pay to Unlock"}
               </button>
             </div>
           </div>
         </div>
 
-        {/* Final CTA */}
-        <div className="card shadow-sm border-0">
-          <div className="card-body p-4">
-            <h2 className="h5 mb-2">Unlock training centres closest to your address</h2>
-            <p className="text-muted mb-3">
-              Full Results shows nearby providers, contact info, and delivery mode (physical/hybrid/online).
-            </p>
-            <button className="btn btn-primary btn-lg w-100" onClick={goPay}>
-              Go to Payment (Coupon Supported)
-            </button>
-          </div>
-        </div>
-
-        <div className="text-center text-muted small mt-4">
-          © {new Date().getFullYear()} Skill2Earn Padi
-        </div>
+        <div className="text-center text-muted small mt-4">© {new Date().getFullYear()} Skill2Earn Padi</div>
       </div>
     </div>
   );
