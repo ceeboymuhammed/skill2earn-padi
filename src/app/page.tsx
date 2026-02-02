@@ -38,7 +38,7 @@ export default function Home() {
             </div>
 
             <h1 className="display-6 fw-bold lh-sm">
-            Discover the one SKILL built for your CURRENT budget and lifestyle.
+            Discover the one SKILL that matches your CURRENT reality and lifestyle.
             </h1>
 
             <p className="text-muted mt-3" style={{ fontSize: 16, lineHeight: 1.7 }}>
