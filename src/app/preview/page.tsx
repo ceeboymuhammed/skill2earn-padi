@@ -40,10 +40,6 @@ type AssessmentStored = {
   city?: string;
   area?: string;
 
-  full_name?: string;
-  email?: string;
-  phone?: string;
-
   equipment_access?: string;
   computer_proficiency?: number;
 
@@ -61,12 +57,19 @@ type AssessmentStored = {
 
   income_urgency?: string;
   primary_interest?: string;
+
+  full_name?: string;
+  email?: string;
+  phone?: string;
 };
 
 const PREVIEW_KEY = "s2e_last_preview";
-const FULL_KEY = "s2e_last_full";
 const ASSESS_KEY = "s2e_last_assessment";
 const SESSION_KEY = "s2e_session_id";
+const FULL_KEY = "s2e_last_full";
+
+// for results page
+const SELECTED_RESULT_KEY = "s2e_selected_result_v1";
 
 function safeParse<T>(raw: string | null): T | null {
   if (!raw) return null;
@@ -81,55 +84,77 @@ function isObj(x: unknown): x is Record<string, unknown> {
   return !!x && typeof x === "object";
 }
 
-function getApiErrorMessage(json: unknown): string | null {
-  if (!isObj(json)) return null;
-  if (typeof json.message === "string") return json.message;
-  if (typeof json.error === "string") return json.error;
-  return null;
-}
-
 function isPreviewResp(x: unknown): x is PreviewResp {
-  if (!isObj(x)) return false;
-  return x.mode === "preview" && typeof x.session_id === "string" && Array.isArray(x.recommendations);
+  return (
+    isObj(x) &&
+    x.mode === "preview" &&
+    typeof x.session_id === "string" &&
+    Array.isArray(x.recommendations)
+  );
 }
 
 function isFullResp(x: unknown): x is FullResp {
-  if (!isObj(x)) return false;
-  return x.mode === "full" && typeof x.session_id === "string" && Array.isArray(x.recommendations);
+  return (
+    isObj(x) &&
+    x.mode === "full" &&
+    typeof x.session_id === "string" &&
+    Array.isArray(x.recommendations)
+  );
 }
 
-function getPayLink(): string | null {
-  const link = process.env.NEXT_PUBLIC_FLW_PAY_LINK;
-  if (!link) return null;
-  const trimmed = link.trim();
-  return trimmed.length ? trimmed : null;
+function clampTop3(recs: PreviewRec[]) {
+  return [...recs].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, 3);
 }
+
+function getApiErrorMessage(json: unknown): string | null {
+  if (!json || typeof json !== "object") return null;
+  const obj = json as Record<string, unknown>;
+  if (typeof obj.message === "string") return obj.message;
+  if (typeof obj.error === "string") return obj.error;
+  return null;
+}
+
+function scoreToPct(score: number) {
+  if (!Number.isFinite(score)) return 0;
+  return score > 1 ? Math.round(score) : Math.round(score * 100);
+}
+
+type Commence = "NOW" | "WITHIN_3_MONTHS";
 
 export default function PreviewPage() {
   const router = useRouter();
-  const couponBoxRef = useRef<HTMLDivElement | null>(null);
 
-  const [resp, setResp] = useState<PreviewResp | null>(null);
   const [assessment, setAssessment] = useState<AssessmentStored | null>(null);
-
+  const [resp, setResp] = useState<PreviewResp | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [savedMsg, setSavedMsg] = useState<string | null>(null);
 
-  const [rating, setRating] = useState<1 | 2 | 3 | 4 | 5 | null>(null);
-  const [whatLiked, setWhatLiked] = useState("");
-  const [whatWrong, setWhatWrong] = useState("");
+  const [selectedSkillCode, setSelectedSkillCode] = useState<string>("");
 
-  const [unlockLoading, setUnlockLoading] = useState(false);
+  // send form
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
 
-  // Coupon UI
-  const [couponCode, setCouponCode] = useState("");
-  const [couponLoading, setCouponLoading] = useState(false);
-  const [couponMsg, setCouponMsg] = useState<string | null>(null);
+  const [commence, setCommence] = useState<Commence>("NOW");
 
-  // Pay UI
-  const [payLoading, setPayLoading] = useState(false);
+  // ✅ Default YES
+  const [wantsTrainingCentre, setWantsTrainingCentre] = useState(true);
+
+  const [geoLoading, setGeoLoading] = useState(false);
+  const [lat, setLat] = useState<number | null>(null);
+  const [lng, setLng] = useState<number | null>(null);
+  const [locationText, setLocationText] = useState("");
+
+  const [sendLoading, setSendLoading] = useState(false);
+  const [sendMsg, setSendMsg] = useState<string | null>(null);
+  const [sendErr, setSendErr] = useState<string | null>(null);
+
+  const didInit = useRef(false);
 
   useEffect(() => {
+    if (didInit.current) return;
+    didInit.current = true;
+
     const a = safeParse<AssessmentStored>(localStorage.getItem(ASSESS_KEY));
     setAssessment(a);
 
@@ -152,351 +177,426 @@ export default function PreviewPage() {
     localStorage.setItem(SESSION_KEY, session_id);
     setResp({ ...r, session_id });
     setError(null);
+
+    // Prefill if we have them
+    setFullName(a?.full_name ?? "");
+    setEmail(a?.email ?? "");
+    setPhone(a?.phone ?? "");
+
+    // Default-select first recommendation (so UX feels smooth)
+    if (r.recommendations?.length) {
+      setSelectedSkillCode(r.recommendations[0].skill_code);
+    }
   }, []);
 
-  const top = useMemo(() => resp?.recommendations?.slice(0, 3) ?? [], [resp]);
-  const topSkillCode = top[0]?.skill_code ?? null;
+  const top3 = useMemo(() => {
+    if (!resp?.recommendations?.length) return [];
+    return clampTop3(resp.recommendations);
+  }, [resp]);
 
-  async function tryLoadFullResults() {
-    setError(null);
-    setSavedMsg(null);
+  const selectedPreview = useMemo(() => {
+    if (!selectedSkillCode) return null;
+    return top3.find((x) => x.skill_code === selectedSkillCode) ?? null;
+  }, [top3, selectedSkillCode]);
 
-    const a = safeParse<AssessmentStored>(localStorage.getItem(ASSESS_KEY));
-    const session_id = localStorage.getItem(SESSION_KEY) || a?.session_id || resp?.session_id;
+  function requestLocation() {
+    setGeoLoading(true);
+    setSendErr(null);
 
-    if (!a || !session_id) {
-      setError("Missing assessment data. Please retake the assessment.");
+    if (!("geolocation" in navigator)) {
+      setGeoLoading(false);
+      setSendErr("Geolocation is not supported on this device. Please type your location manually.");
       return;
     }
 
-    setUnlockLoading(true);
-    try {
-      const payload = { ...a, session_id, mode: "full" as const };
-
-      const res = await fetch("/api/recommend", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      const json = (await res.json()) as unknown;
-
-      if (!res.ok) {
-        const msg = getApiErrorMessage(json) ?? "Unable to load full results yet.";
-        setError(msg);
-        return;
-      }
-
-      if (isFullResp(json)) {
-        localStorage.setItem(FULL_KEY, JSON.stringify(json));
-        router.push("/results");
-        return;
-      }
-
-      if (isPreviewResp(json)) {
-        localStorage.setItem(PREVIEW_KEY, JSON.stringify(json));
-        setResp(json);
-        setError("Still locked. Enter your coupon code to unlock full results.");
-        return;
-      }
-
-      setError("Unexpected response. Please try again.");
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Unknown error");
-    } finally {
-      setUnlockLoading(false);
-    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLat(pos.coords.latitude);
+        setLng(pos.coords.longitude);
+        setGeoLoading(false);
+      },
+      () => {
+        setGeoLoading(false);
+        setSendErr("Could not access your location. Please type your location manually.");
+      },
+      { enableHighAccuracy: true, timeout: 12000 }
+    );
   }
 
-  function startPayment() {
-    setError(null);
-    setCouponMsg(null);
+  function validateSend(): string | null {
+    if (!resp?.session_id) return "Session missing. Please retake the assessment.";
+    if (!selectedSkillCode) return "Please select one skill to continue.";
 
-    const link = getPayLink();
-    if (!link) {
-      setError("Missing NEXT_PUBLIC_FLW_PAY_LINK in .env.local");
-      return;
-    }
+    if (!fullName.trim()) return "Please enter your full name.";
+    if (!email.trim()) return "Please enter your email.";
+    if (!phone.trim()) return "Please enter your phone number.";
 
-    setPayLoading(true);
-
-    // Open Flutterwave link in same tab (or use window.open for new tab)
-    window.location.href = link;
-  }
-
-  async function verifyCoupon() {
-    setError(null);
-    setCouponMsg(null);
-
-    const session_id = localStorage.getItem(SESSION_KEY) || resp?.session_id || assessment?.session_id;
-    if (!session_id) {
-      setError("No session found. Please retake the assessment.");
-      return;
-    }
-
-    const code = couponCode.trim();
-    if (!code) {
-      setError("Enter a coupon code.");
-      return;
-    }
-
-    setCouponLoading(true);
-    try {
-      const res = await fetch("/api/verify-coupon", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id, coupon_code: code }),
-      });
-
-      const json = (await res.json()) as unknown;
-
-      if (!res.ok) {
-        const msg = getApiErrorMessage(json) ?? "Coupon verification failed.";
-        setError(msg);
-        return;
+    if (wantsTrainingCentre) {
+      const hasCoords = lat !== null && lng !== null;
+      const hasText = locationText.trim().length > 2;
+      if (!hasCoords && !hasText) {
+        return "Please share your location (GPS) or type your city/area to find a training centre.";
       }
-
-      setCouponMsg("✅ Coupon verified. You’re unlocked — tap “Show my full results”.");
-      if (resp) setResp({ ...resp, unlocked: true });
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Unknown error");
-    } finally {
-      setCouponLoading(false);
     }
+
+    return null;
   }
 
-  async function saveFeedback() {
-    setSavedMsg(null);
-    setError(null);
+  async function fetchFullAndPickSelected(code: string): Promise<FullRec> {
+    if (!resp || !assessment) throw new Error("Missing session or assessment.");
 
-    if (!resp) {
-      setError("Preview not loaded.");
+    const payload = {
+      ...assessment,
+      session_id: resp.session_id,
+      mode: "full" as const,
+    };
+
+    const res = await fetch("/api/recommend", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const json = (await res.json()) as unknown;
+
+    if (!res.ok) {
+      const msg = getApiErrorMessage(json) ?? "Failed to load full details.";
+      throw new Error(msg);
+    }
+
+    if (!isFullResp(json)) {
+      throw new Error("Invalid full details response.");
+    }
+
+    localStorage.setItem(FULL_KEY, JSON.stringify(json));
+
+    const selected = json.recommendations.find((r) => r.skill_code === code);
+    if (!selected) throw new Error("Selected skill not found in full recommendations.");
+
+    return selected;
+  }
+
+  async function sendResult() {
+    setSendMsg(null);
+    setSendErr(null);
+
+    const v = validateSend();
+    if (v) {
+      setSendErr(v);
       return;
     }
-    if (!rating) {
-      setError("Please rate the recommendations (1–5).");
-      return;
-    }
 
+    if (!resp || !assessment) return;
+
+    setSendLoading(true);
     try {
-      const session_id = localStorage.getItem(SESSION_KEY) || resp.session_id || assessment?.session_id || null;
+      // ✅ Load full only when sending
+      const selectedFull = await fetchFullAndPickSelected(selectedSkillCode);
 
-      const res = await fetch("/api/feedback", {
+      const body = {
+        session_id: resp.session_id,
+
+        state: assessment.state ?? "",
+        city: assessment.city ?? "",
+        area: assessment.area ?? "",
+
+        full_name: fullName.trim(),
+        email: email.trim(),
+        phone: phone.trim(),
+
+        commence,
+        wants_training_centre: wantsTrainingCentre,
+
+        location: wantsTrainingCentre
+          ? {
+              lat,
+              lng,
+              text: locationText.trim() || undefined,
+            }
+          : null,
+
+        preview_recommendations: top3,
+        selected_recommendation: selectedFull,
+        answers: assessment,
+      };
+
+      const res = await fetch("/api/send-results", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_id,
-          rating,
-          whatLiked: whatLiked.trim() || undefined,
-          whatWrong: whatWrong.trim() || undefined,
-          top_skill_code: topSkillCode ?? undefined,
-          state: assessment?.state,
-          city: assessment?.city,
-          area: assessment?.area,
-        }),
+        body: JSON.stringify(body),
       });
 
       const json = (await res.json()) as unknown;
       if (!res.ok) {
-        const msg = getApiErrorMessage(json) ?? "Failed to submit feedback";
+        const msg = getApiErrorMessage(json) ?? "Failed to send your result. Please try again.";
         throw new Error(msg);
       }
 
-      setSavedMsg("Thanks! Your feedback has been submitted.");
+      setSendMsg("✅ Your selected skill details have been sent successfully.");
+
+      localStorage.setItem(
+        SELECTED_RESULT_KEY,
+        JSON.stringify({
+          session_id: resp.session_id,
+          selected: selectedFull,
+          commence,
+          wants_training_centre: wantsTrainingCentre,
+          location: body.location,
+          contact: { full_name: body.full_name, email: body.email, phone: body.phone },
+          preview: top3,
+        })
+      );
+
+      router.push("/results");
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Unknown error");
+      setSendErr(e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setSendLoading(false);
     }
   }
 
-  function redoAssessment() {
-    localStorage.removeItem(PREVIEW_KEY);
-    localStorage.removeItem(FULL_KEY);
-    localStorage.removeItem(SESSION_KEY);
-    router.push("/assessment");
+  if (error) {
+    return (
+      <div className="container py-5">
+        <div className="alert alert-danger">{error}</div>
+        <button className="btn btn-primary" onClick={() => router.push("/assessment")}>
+          Go to Assessment
+        </button>
+      </div>
+    );
   }
 
-  function scrollToCoupon() {
-    couponBoxRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (!resp) {
+    return (
+      <div className="container py-5">
+        <div className="text-muted">Loading preview…</div>
+      </div>
+    );
   }
 
   return (
     <div className="bg-light min-vh-100">
       <div className="bg-white border-bottom">
-        <div className="container py-3 d-flex align-items-center justify-content-between">
-          <div>
-            <div className="fw-bold text-primary">Skill2Earn Padi</div>
-            <div className="text-muted small">Preview Results</div>
+        <div className="container py-3">
+          <div className="fw-bold text-primary">Your Top 3 Skill Matches</div>
+          <div className="text-muted small">
+            Select <strong>one</strong> skill. Then fill your details and send to see the full breakdown.
           </div>
-          <button className="btn btn-outline-primary" onClick={redoAssessment}>
-            Retake Assessment
-          </button>
         </div>
       </div>
 
-      <div className="container py-4" style={{ maxWidth: 960 }}>
-        {error && <div className="alert alert-danger">{error}</div>}
-        {couponMsg && <div className="alert alert-success">{couponMsg}</div>}
-
-        <div className="card shadow-sm border-0 mb-4">
-          <div className="card-body p-4">
-            <div className="row g-4 align-items-center">
-              <div className="col-12 col-lg-7">
-                <div className="badge text-bg-primary mb-2">Preview is Ready</div>
-                <h1 className="h3 mb-2">
-                  Your best skill path is here — <span className="text-primary">unlock</span> to see everything.
-                </h1>
-                <p className="text-muted mb-0">
-                  Pay to get a coupon on WhatsApp, then come back here and apply the coupon to unlock full results.
-                </p>
-              </div>
-
-              <div className="col-12 col-lg-5">
-                <div className="p-3 rounded bg-primary bg-opacity-10 border border-primary border-opacity-25">
-                  <div className="fw-semibold mb-1">When you unlock, you get:</div>
-                  <ul className="mb-0 small">
-                    <li>Nearest verified training centres with address + WhatsApp</li>
-                    <li>Prerequisite warnings (e.g. Computer Fundamentals)</li>
-                    <li>Timeline realism: learn time + earn time</li>
-                    <li>Cost reality based on your profile</li>
-                  </ul>
-                </div>
-              </div>
-            </div>
-
-            <div className="row g-3 mt-4">
-              <div className="col-12 col-lg-6">
-                <div className="p-3 border rounded h-100 bg-white">
-                  <div className="fw-semibold mb-1">Option 1: Pay to get your coupon</div>
-                  <div className="text-muted small mb-3">
-                    After successful payment, Flutterwave redirects you to WhatsApp (+2348026521855) to collect your coupon.
-                    Then return to this page and apply it.
-                  </div>
-
-                  <button className="btn btn-primary btn-lg w-100" onClick={startPayment} disabled={payLoading}>
-                    {payLoading ? "Redirecting..." : "Pay to Unlock (Get Coupon on WhatsApp)"}
-                  </button>
-
-                  <button className="btn btn-outline-primary w-100 mt-2" onClick={scrollToCoupon}>
-                    I already have my coupon — enter it now
-                  </button>
-                </div>
-              </div>
-
-              <div className="col-12 col-lg-6" ref={couponBoxRef}>
-                <div className="p-3 border rounded h-100 bg-white">
-                  <div className="fw-semibold mb-1">Option 2: Enter coupon</div>
-                  <div className="text-muted small mb-2">Paste the coupon you received on WhatsApp.</div>
-
-                  <div className="d-flex gap-2">
-                    <input
-                      className="form-control form-control-lg"
-                      placeholder="Enter coupon code"
-                      value={couponCode}
-                      onChange={(e) => setCouponCode(e.target.value)}
-                    />
-                    <button className="btn btn-outline-primary btn-lg" onClick={verifyCoupon} disabled={couponLoading}>
-                      {couponLoading ? "Verifying..." : "Verify"}
-                    </button>
-                  </div>
-
-                  <div className="mt-3">
-                    <button className="btn btn-success btn-lg w-100" onClick={tryLoadFullResults} disabled={unlockLoading}>
-                      {unlockLoading ? "Loading..." : "Show my full results"}
-                    </button>
-                    <div className="text-muted small text-center mt-2">
-                      Verify coupon first, then tap “Show my full results”.
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-          </div>
-        </div>
-
-        <div className="row g-3 mb-4">
-          {top.map((r) => (
-            <div className="col-12 col-md-6 col-lg-4" key={r.skill_code}>
-              <div className="card h-100 shadow-sm border-0">
-                <div className="card-body">
-                  <div className="d-flex justify-content-between align-items-start">
-                    <div>
-                      <div className="text-muted small">Top Match</div>
+      <div className="container py-4">
+        {/* TOP 3 */}
+        <div className="row g-3">
+          {top3.map((r) => {
+            const selected = r.skill_code === selectedSkillCode;
+            return (
+              <div className="col-12 col-md-4" key={r.skill_code}>
+                <div className={`card shadow-sm border-0 h-100 ${selected ? "border border-primary" : ""}`}>
+                  <div className="card-body">
+                    <div className="d-flex align-items-start justify-content-between">
                       <div className="fw-bold">{r.skill_name}</div>
-                      <div className="text-muted small">Code: {r.skill_code}</div>
+                      <span className="badge bg-primary-subtle text-primary">
+                        {scoreToPct(r.score)}%
+                      </span>
                     </div>
-                    <span className="badge text-bg-primary">Score {r.score}</span>
+
+                    {r.teaser?.length ? (
+                      <ul className="mt-3 mb-0 small text-muted">
+                        {r.teaser.slice(0, 3).map((t, i) => (
+                          <li key={i}>{t}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="mt-3 small text-muted">No teaser available.</div>
+                    )}
                   </div>
 
-                  <hr />
-
-                  <div className="fw-semibold mb-2">Why it’s showing up</div>
-                  <ul className="small mb-0">
-                    {(r.teaser ?? []).slice(0, 2).map((t, idx) => (
-                      <li key={idx}>{t}</li>
-                    ))}
-                  </ul>
-                </div>
-
-                <div className="card-footer bg-white border-0 pt-0 pb-3 px-3">
-                  <button className="btn btn-success w-100" onClick={tryLoadFullResults} disabled={unlockLoading}>
-                    {unlockLoading ? "Loading..." : "Show Full Details"}
-                  </button>
+                  <div className="card-footer bg-white border-0 pt-0">
+                    <button
+                      type="button"
+                      className={`btn w-100 ${selected ? "btn-primary" : "btn-outline-primary"}`}
+                      onClick={() => setSelectedSkillCode(r.skill_code)}
+                    >
+                      {selected ? "Selected" : "Select"}
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
-        <div className="card shadow-sm border-0 mb-4">
-          <div className="card-body p-4">
-            <h2 className="h5 mb-2">Rate the accuracy of these recommendations</h2>
-            <p className="text-muted mb-3">
-              Your feedback helps us improve the engine for Nigeria and helps us validate skills vs. real outcomes.
-            </p>
+        {/* SELECTED SUMMARY */}
+        <div className="mt-4">
+          <div className="card shadow-sm border-0">
+            <div className="card-body p-4">
+              <div className="fw-semibold mb-2">Selected Skill</div>
 
-            {savedMsg && <div className="alert alert-success">{savedMsg}</div>}
+              {!selectedPreview && (
+                <div className="text-muted">Select one of the 3 recommendations above.</div>
+              )}
 
-            <div className="mb-3">
-              <div className="fw-semibold mb-2">Your rating *</div>
-              <div className="d-flex flex-wrap gap-2">
-                {[1, 2, 3, 4, 5].map((n) => (
-                  <button
-                    key={n}
-                    type="button"
-                    className={`btn ${rating === n ? "btn-primary" : "btn-outline-primary"}`}
-                    onClick={() => setRating(n as 1 | 2 | 3 | 4 | 5)}
-                  >
-                    {n}
-                  </button>
-                ))}
-              </div>
-              <div className="text-muted small mt-1">1 = poor fit, 5 = perfect fit</div>
-            </div>
+              {selectedPreview && (
+                <>
+                  <div className="d-flex align-items-center justify-content-between">
+                    <h2 className="h5 mb-0">{selectedPreview.skill_name}</h2>
+                    <span className="badge bg-success-subtle text-success">
+                      Match Score: {scoreToPct(selectedPreview.score)}%
+                    </span>
+                  </div>
 
-            <div className="row g-3">
-              <div className="col-12 col-md-6">
-                <label className="form-label fw-semibold">What did we get right? (optional)</label>
-                <textarea className="form-control" rows={4} value={whatLiked} onChange={(e) => setWhatLiked(e.target.value)} />
-              </div>
-              <div className="col-12 col-md-6">
-                <label className="form-label fw-semibold">What did we miss? (optional)</label>
-                <textarea className="form-control" rows={4} value={whatWrong} onChange={(e) => setWhatWrong(e.target.value)} />
-              </div>
-            </div>
+                  {selectedPreview.teaser?.length ? (
+                    <>
+                      <div className="mt-3 fw-semibold">Quick reasons</div>
+                      <ul className="mb-0">
+                        {selectedPreview.teaser.slice(0, 3).map((x, i) => (
+                          <li key={i}>{x}</li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : null}
 
-            <div className="d-grid d-md-flex gap-2 mt-3">
-              <button className="btn btn-primary" onClick={saveFeedback}>
-                Submit Feedback
-              </button>
-              <button className="btn btn-outline-primary" onClick={startPayment} disabled={payLoading}>
-                {payLoading ? "Redirecting..." : "Pay (Get Coupon on WhatsApp)"}
-              </button>
+                  <div className="text-muted small mt-3">
+                    Full details will load after you click <strong>Send My Selected Skill Result</strong>.
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>
 
-        <div className="text-center text-muted small mt-4">© {new Date().getFullYear()} Skill2Earn Padi</div>
+        {/* SEND FORM */}
+        <div className="mt-4">
+          <div className="card shadow-sm border-0">
+            <div className="card-body p-4">
+              <div className="fw-semibold mb-2">Receive Your Result</div>
+              <div className="text-muted small mb-3">
+                We’ll send only the full details of your <strong>selected</strong> skill.
+              </div>
+
+              {sendMsg && <div className="alert alert-success">{sendMsg}</div>}
+              {sendErr && <div className="alert alert-danger">{sendErr}</div>}
+
+              <div className="row g-3">
+                <div className="col-12 col-md-4">
+                  <label className="form-label">Full name *</label>
+                  <input className="form-control" value={fullName} onChange={(e) => setFullName(e.target.value)} />
+                </div>
+                <div className="col-12 col-md-4">
+                  <label className="form-label">Email *</label>
+                  <input className="form-control" value={email} onChange={(e) => setEmail(e.target.value)} />
+                </div>
+                <div className="col-12 col-md-4">
+                  <label className="form-label">Phone *</label>
+                  <input className="form-control" value={phone} onChange={(e) => setPhone(e.target.value)} />
+                </div>
+              </div>
+
+              <hr className="my-4" />
+
+              <div className="row g-3">
+                <div className="col-12 col-md-6">
+                  <label className="form-label">Are you willing to commence now or within 3 months? *</label>
+                  <div className="d-flex gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      className={`btn ${commence === "NOW" ? "btn-primary" : "btn-outline-primary"}`}
+                      onClick={() => setCommence("NOW")}
+                    >
+                      Commence Now
+                    </button>
+                    <button
+                      type="button"
+                      className={`btn ${commence === "WITHIN_3_MONTHS" ? "btn-primary" : "btn-outline-primary"}`}
+                      onClick={() => setCommence("WITHIN_3_MONTHS")}
+                    >
+                      Within 3 Months
+                    </button>
+                  </div>
+                </div>
+
+                <div className="col-12 col-md-6">
+                  <label className="form-label">Do you want us to connect you with the nearest training centre?</label>
+                  <div className="form-check form-switch">
+                    <input
+                      className="form-check-input"
+                      type="checkbox"
+                      checked={wantsTrainingCentre}
+                      onChange={(e) => setWantsTrainingCentre(e.target.checked)}
+                      id="tcSwitch"
+                    />
+                    <label className="form-check-label" htmlFor="tcSwitch">
+                      {wantsTrainingCentre ? "Yes, connect me" : "No, not now"}
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              {wantsTrainingCentre && (
+                <>
+                  <hr className="my-4" />
+                  <div className="row g-3">
+                    <div className="col-12 col-md-6">
+                      <label className="form-label">Share your location (recommended)</label>
+                      <div className="d-flex gap-2">
+                        <button className="btn btn-outline-primary" type="button" onClick={requestLocation} disabled={geoLoading}>
+                          {geoLoading ? "Getting location…" : "Use my current location"}
+                        </button>
+                        <div className="text-muted small d-flex align-items-center">
+                          {lat !== null && lng !== null ? "✅ Location captured" : "Optional"}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="col-12 col-md-6">
+                      <label className="form-label">Or type your city/area</label>
+                      <input
+                        className="form-control"
+                        value={locationText}
+                        onChange={(e) => setLocationText(e.target.value)}
+                        placeholder="e.g. Ikeja, Lagos"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
+
+              <hr className="my-4" />
+
+              <button
+                className="btn btn-success w-100"
+                onClick={sendResult}
+                disabled={sendLoading || !selectedSkillCode}
+              >
+                {sendLoading ? "Sending…" : "Send My Selected Skill Result"}
+              </button>
+
+              <div className="text-muted small mt-2">
+                Tip: pick one skill above first. We’ll send only the full details of that skill.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* RETAKE */}
+        <div className="mt-4 text-center">
+          <button className="btn btn-link" onClick={() => router.push("/assessment")}>
+            Retake assessment
+          </button>
+        </div>
+
+        {/* FOOTER PARTNERSHIP */}
+        <div className="text-center text-muted small mt-4">
+          Partnership & Collaboration:{" "}
+          <a href="tel:+2347034536719" className="text-decoration-none fw-semibold">
+            +2347034536719
+          </a>{" "}
+          |{" "}
+          <a href="mailto:skill2earn-padi@gmail.com" className="text-decoration-none fw-semibold">
+            skill2earn-padi@gmail.com
+          </a>
+        </div>
       </div>
     </div>
   );

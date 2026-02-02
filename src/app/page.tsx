@@ -112,6 +112,22 @@ export default function Home() {
         </div>
 
         {/* Footer */}
+        <div className="mt-4 pt-3 border-top text-center small text-muted">
+            <p className="mb-1 fw-semibold text-dark">🤝 Partnership & Collaboration</p>
+            <p className="mb-1">
+              Want to partner with us, run a training centre, or collaborate on empowering more learners?
+            </p>
+            <p className="mb-0">
+              Reach out via phone:{" "}
+              <a href="tel:+2347034536719" className="text-decoration-none fw-semibold">
+                +234 703 453 6719
+              </a>{" "}
+              or email:{" "}
+              <a href="mailto:skill2earn-padi@gmail.com" className="text-decoration-none fw-semibold">
+                skill2earn-padi@gmail.com
+              </a>
+            </p>
+          </div>
         <div className="text-center text-muted small mt-5">
           © {new Date().getFullYear()} Skill2Earn Padi
         </div>

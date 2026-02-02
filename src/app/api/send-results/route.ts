@@ -3,206 +3,83 @@ import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import nodemailer, { type Transporter } from "nodemailer";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-// ---------------- Types ----------------
 type DeliveryStatus = "pending" | "sent" | "failed";
 
 type RecommendationItem = {
   skill_code?: string;
   skill_name?: string;
-  name?: string;
   score?: number;
   teaser?: string[];
   reasons?: string[];
+  badges?: string[];
+  warnings?: string[];
 };
 
 type SubmissionRow = {
   id: string;
   session_id: string;
-
-  full_name: string;
   email: string;
-  phone: string;
-
-  state: string;
-  city: string;
-  area: string | null;
-
-  mode: string;
-  unlocked: boolean;
-
-  answers: Record<string, unknown>;
-  preview: RecommendationItem[] | null;
-  recommendations: RecommendationItem[] | null;
-
   email_status: DeliveryStatus;
-  sms_status: DeliveryStatus;
-  whatsapp_status: DeliveryStatus;
-
   email_sent_at: string | null;
-  sms_sent_at: string | null;
-  whatsapp_sent_at: string | null;
-
-  // retry fields
   send_attempts: number;
-  next_retry_at: string | null;
-  last_send_attempt_at: string | null;
-  last_send_error: string | null;
-
-  created_at: string;
-  updated_at: string;
+  created_at?: string;
 };
 
-// ---------------- Security ----------------
-function requireAuth(req: Request): boolean {
-  const key = req.headers.get("x-send-secret");
-  return Boolean(key && key === process.env.SEND_RESULTS_SECRET);
-}
+const BodySchema = z.object({
+  session_id: z.string().min(6),
 
-// ---------------- Config ----------------
-const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 50;
-const MAX_ATTEMPTS = 6;
+  state: z.string().optional().default(""),
+  city: z.string().optional().default(""),
+  area: z.string().optional().default(""),
 
-// Cooldown schedule (minutes) by attempt number (1-based)
-const COOLDOWN_MINUTES = [2, 5, 15, 60, 180, 720]; // 2m, 5m, 15m, 1h, 3h, 12h
+  full_name: z.string().min(2),
+  email: z.string().email(),
+  phone: z.string().min(6),
 
-function computeNextRetryAt(attemptsAfterFailure: number): string {
-  const idx = Math.min(Math.max(attemptsAfterFailure, 1), COOLDOWN_MINUTES.length) - 1;
-  const minutes = COOLDOWN_MINUTES[idx];
-  return new Date(Date.now() + minutes * 60_000).toISOString();
-}
+  commence: z.enum(["NOW", "WITHIN_3_MONTHS"]),
+  wants_training_centre: z.boolean().default(false),
 
-// ---------------- Helpers ----------------
-function normalizePhone(phone: string) {
-  return phone.replace(/[^\d+]/g, "").trim();
-}
+  location: z
+    .object({
+      lat: z.number().nullable().optional(),
+      lng: z.number().nullable().optional(),
+      text: z.string().optional(),
+    })
+    .nullable()
+    .optional(),
 
-function normalizeTo234(phone: string) {
-  const raw = normalizePhone(phone);
+  preview_recommendations: z.array(
+    z.object({
+      skill_code: z.string(),
+      skill_name: z.string(),
+      score: z.number(),
+      teaser: z.array(z.string()).default([]),
+    })
+  ),
 
-  if (raw.startsWith("+234")) return raw.slice(1); // "234..."
-  if (raw.startsWith("234")) return raw;
-  if (raw.startsWith("0")) return "234" + raw.slice(1);
+  selected_recommendation: z.object({
+    skill_code: z.string(),
+    skill_name: z.string(),
+    score: z.number(),
+    reasons: z.array(z.string()).default([]),
+    badges: z.array(z.string()).default([]),
+    warnings: z.array(z.string()).default([]),
+  }),
 
-  return raw.startsWith("+") ? raw.slice(1) : raw;
-}
+  answers:z.record(z.string(), z.any()),
+});
 
-function isValidPhone(phone: string) {
-  const p = normalizePhone(phone);
-  const digits = p.startsWith("+") ? p.slice(1) : p;
-  return /^\d{10,15}$/.test(digits);
-}
-
-function getBaseUrl() {
-  if (process.env.APP_URL) return process.env.APP_URL;
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
-  return "http://localhost:3000";
-}
-
-function createMailer(): Transporter {
-  return nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    auth: {
-      user: process.env.GMAIL_SMTP_USER!,
-      pass: process.env.GMAIL_SMTP_APP_PASSWORD!,
-    },
-  });
-}
-
-// ---------------- Email Content ----------------
-function buildEmailContent(sub: SubmissionRow) {
-  const recs =
-    sub.recommendations?.length
-      ? sub.recommendations
-      : sub.preview?.length
-        ? sub.preview
-        : [];
-
-  const topSkills = recs.slice(0, 5);
-
-  const listHtml = topSkills.length
-    ? topSkills
-        .map((r, i) => {
-          const name = r.skill_name || r.name || r.skill_code || `Skill ${i + 1}`;
-          const score = typeof r.score === "number" ? `Match Score: ${r.score}` : "";
-          return `
-            <tr>
-              <td style="padding:12px 0;border-bottom:1px solid #eee;">
-                <strong style="font-size:16px;">${escapeHtml(name)}</strong><br/>
-                <span style="color:#555;font-size:13px;">${escapeHtml(score)}</span>
-              </td>
-            </tr>
-          `;
-        })
-        .join("")
-    : `<tr><td>No recommendations available yet.</td></tr>`;
-
-  const previewLink = `${getBaseUrl()}/preview?session=${encodeURIComponent(sub.session_id)}`;
-
-  const html = `
-  <div style="font-family:Arial,Helvetica,sans-serif;background:#f6f8fb;padding:30px 10px;">
-    <div style="max-width:600px;margin:auto;background:#ffffff;border-radius:8px;overflow:hidden;">
-      <div style="background:#0d6efd;color:white;padding:20px 24px;">
-        <h2 style="margin:0;">Your Skill2Earn Padi Results 🎯</h2>
-      </div>
-
-      <div style="padding:24px;">
-        <p>Hi <strong>${escapeHtml(sub.full_name)}</strong>,</p>
-        <p>Based on your answers, these are the skill paths that best fit your tools, budget, and environment:</p>
-
-        <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:10px;">
-          ${listHtml}
-        </table>
-
-        <p style="margin-top:20px;">
-          Want the full details? Click below to view your result page.
-        </p>
-
-        <div style="text-align:center;margin:30px 0;">
-          <a href="${previewLink}"
-             style="background:#0d6efd;color:#fff;padding:12px 22px;border-radius:6px;text-decoration:none;font-weight:bold;">
-            View Results
-          </a>
-        </div>
-
-        <p style="font-size:13px;color:#666;">
-          Need help choosing the best one for your budget? Reply to this email and we’ll guide you.
-        </p>
-      </div>
-
-      <div style="background:#f1f3f5;padding:16px 24px;font-size:12px;color:#666;text-align:center;">
-        Skill2Earn Padi · Helping you earn with the right skills<br/>
-        © ${new Date().getFullYear()}
-      </div>
-    </div>
-  </div>
-  `;
-
-  const text = [
-    `Hi ${sub.full_name},`,
-    "",
-    "Your Skill2Earn Padi results are ready:",
-    "",
-    ...topSkills.map((r, i) => {
-      const name = r.skill_name || r.name || r.skill_code || `Skill ${i + 1}`;
-      const score = typeof r.score === "number" ? ` (Match Score: ${r.score})` : "";
-      return `${i + 1}. ${name}${score}`;
-    }),
-    "",
-    `View your results: ${previewLink}`,
-    "",
-    "Reply if you need help choosing the best option.",
-    "— Skill2Earn Padi",
-  ].join("\n");
-
-  return { html, text, previewLink };
+function scoreToPct(score: number) {
+  if (!Number.isFinite(score)) return 0;
+  return score > 1 ? Math.round(score) : Math.round(score * 100);
 }
 
 function escapeHtml(s: string) {
@@ -214,233 +91,277 @@ function escapeHtml(s: string) {
     .replaceAll("'", "&#039;");
 }
 
-// ---------------- BulkSMSNigeria ----------------
-async function sendSmsBulkNigeria(toPhone234: string, message: string) {
-  const token = process.env.BULKSMSNIGERIA_API_TOKEN!;
-  const from = process.env.BULKSMSNIGERIA_SENDER_ID!;
-  const url = "https://www.bulksmsnigeria.com/api/v2/sms";
+function createMailer(): Transporter {
+  const user = process.env.GMAIL_SMTP_USER;
+  const pass = process.env.GMAIL_SMTP_APP_PASSWORD;
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({
-      from,
-      to: toPhone234,
-      body: message,
-    }),
-  });
-
-  const json: unknown = await res.json().catch(() => ({}));
-
-  if (!res.ok) {
-    let msg = "BulkSMSNigeria send failed";
-    if (json && typeof json === "object") {
-      const o = json as Record<string, unknown>;
-      if (typeof o.message === "string") msg = o.message;
-      else if (typeof o.error === "string") msg = o.error;
-    }
-    throw new Error(msg);
+  if (!user || !pass) {
+    throw new Error("Missing email credentials. Set GMAIL_SMTP_USER and GMAIL_SMTP_APP_PASSWORD.");
   }
 
-  return json;
+  return nodemailer.createTransport({
+    service: "gmail",
+    auth: { user, pass },
+  });
 }
 
-// ---------------- Request Schema ----------------
-const BodySchema = z
-  .object({
-    session_id: z.string().optional(),
-    limit: z.number().int().min(1).max(MAX_LIMIT).optional(),
-    send_email: z.boolean().optional().default(true),
-    send_sms: z.boolean().optional().default(true),
-    send_whatsapp: z.boolean().optional().default(false),
-    force: z.boolean().optional().default(false), // admin override for retry window
-  })
-  .refine((v) => v.session_id || v.limit, { message: "Provide session_id OR limit" });
+function buildWarmEmailHtml(args: {
+  full_name: string;
+  selected: RecommendationItem;
+  commence: "NOW" | "WITHIN_3_MONTHS";
+  wants_training_centre: boolean;
+  locationText: string;
+}) {
+  const { full_name, selected, commence, wants_training_centre, locationText } = args;
 
-type SendBody = z.infer<typeof BodySchema>;
+  const skillName = selected.skill_name || selected.skill_code || "Your Selected Skill";
+  const pct = scoreToPct(selected.score ?? 0);
 
-type SendResult = {
-  session_id: string;
-  email?: { attempted: boolean; ok: boolean };
-  sms?: { attempted: boolean; ok: boolean };
-  whatsapp?: { attempted: boolean; ok: boolean };
-  attempts: number;
-  next_retry_at: string | null;
-  error?: string;
-};
+  const reasons = (selected.reasons ?? []).slice(0, 4);
+  const badges = (selected.badges ?? []).slice(0, 6);
+  const warnings = (selected.warnings ?? []).slice(0, 2);
+
+  const commenceLine =
+    commence === "NOW"
+      ? "You said you want to start now. That’s the kind of energy we like 😄"
+      : "You said you want to start within 3 months. That’s smart — we’ll make it simple and practical.";
+
+  const jokeLine =
+    pct >= 90
+      ? "This match is so strong it almost started learning on your behalf. Almost 😄"
+      : "Great match. Not perfect — but perfection is expensive anyway 😄";
+
+  return `
+  <div style="font-family:Arial,Helvetica,sans-serif;background:#f6f8fb;padding:30px 10px;">
+    <div style="max-width:720px;margin:0 auto;background:#fff;border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,.06);overflow:hidden;">
+      <div style="padding:20px;background:#0b5ed7;color:#fff;">
+        <div style="font-size:18px;font-weight:700;">Skill2Earn Result</div>
+        <div style="opacity:.95;margin-top:6px;">Hi ${escapeHtml(full_name)} — here’s your selected skill.</div>
+      </div>
+
+      <div style="padding:22px;">
+        <div style="font-size:18px;font-weight:700;margin-bottom:6px;">${escapeHtml(skillName)}</div>
+        <div style="color:#065f46;background:#d1fae5;display:inline-block;padding:6px 10px;border-radius:999px;font-size:13px;">
+          Match: ${pct}%
+        </div>
+
+        <p style="margin:14px 0 0;color:#111827;line-height:1.5;">
+          ${escapeHtml(jokeLine)}
+        </p>
+
+        <p style="margin:10px 0 0;color:#111827;line-height:1.5;">
+          <strong>Quick note:</strong> ${escapeHtml(commenceLine)}
+        </p>
+
+        ${
+          badges.length
+            ? `<div style="margin:12px 0 0;">
+                ${badges
+                  .map(
+                    (b) =>
+                      `<span style="display:inline-block;margin:4px 6px 0 0;padding:6px 10px;border-radius:999px;background:#eef2ff;color:#1d4ed8;font-size:12px;">${escapeHtml(
+                        b
+                      )}</span>`
+                  )
+                  .join("")}
+              </div>`
+            : ""
+        }
+
+        ${
+          reasons.length
+            ? `<div style="margin-top:16px;font-weight:700;">Why this fits you</div>
+               <ul style="margin:8px 0 0;padding-left:18px;color:#111827;line-height:1.6;">
+                 ${reasons.map((r) => `<li>${escapeHtml(r)}</li>`).join("")}
+               </ul>`
+            : ""
+        }
+
+        ${
+          warnings.length
+            ? `<div style="margin-top:14px;font-weight:700;color:#b91c1c;">Small things to watch out for</div>
+               <ul style="margin:8px 0 0;padding-left:18px;color:#111827;line-height:1.6;">
+                 ${warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join("")}
+               </ul>`
+            : ""
+        }
+
+        <div style="margin-top:16px;padding:12px;border:1px solid #e5e7eb;border-radius:12px;background:#f9fafb;">
+          <div style="font-weight:700;margin-bottom:6px;">Your next 3 steps</div>
+          <ol style="margin:0;padding-left:18px;line-height:1.6;">
+            <li>Learn 30–45 mins daily (consistency beats motivation).</li>
+            <li>Start a tiny project this week — small enough to finish.</li>
+            <li>Tell someone you trust you’re starting (accountability is free 😄).</li>
+          </ol>
+        </div>
+
+        ${
+          wants_training_centre
+            ? `<div style="margin-top:14px;padding:12px;border-radius:12px;background:#fff7ed;border:1px solid #fed7aa;">
+                <strong>Training centre request:</strong> You asked us to connect you to the nearest training centre.
+                <div style="margin-top:6px;color:#7c2d12;">Location: ${escapeHtml(locationText || "Not provided")}</div>
+              </div>`
+            : ""
+        }
+
+        <div style="margin-top:18px;color:#6b7280;font-size:12px;">
+          You can retake the assessment anytime on the website.
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
 
 export async function POST(req: Request) {
   try {
-    if (!requireAuth(req)) {
-      return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
-    }
+    const body = BodySchema.parse(await req.json());
 
-    const body = (await req.json()) as unknown;
-    const input: SendBody = BodySchema.parse(body);
+    // ✅ Idempotency: if already sent for same session_id + email, don’t send again.
+    // This prevents spam when user refreshes / results page calls again.
+    const { data: existing } = await supabase
+      .from("assessment_submissions_v1")
+      .select("id,session_id,email,email_status,email_sent_at,send_attempts,created_at")
+      .eq("session_id", body.session_id)
+      .eq("email", body.email)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle<SubmissionRow>();
 
-    const nowIso = new Date().toISOString();
+    // Save to DB if not exists
+    let rowId = existing?.id ?? null;
 
-    // 1) Fetch submissions to process
-    let rows: SubmissionRow[] = [];
+    if (!existing) {
+      const insertPayload = {
+        session_id: body.session_id,
 
-    if (input.session_id) {
-      const { data, error } = await supabase
+        full_name: body.full_name,
+        email: body.email,
+        phone: body.phone,
+
+        state: body.state ?? "",
+        city: body.city ?? "",
+        area: body.area ? body.area : null,
+
+        mode: "selected",
+        unlocked: true,
+
+        answers: {
+          ...(body.answers ?? {}),
+          commence: body.commence,
+          wants_training_centre: body.wants_training_centre,
+          location: body.location ?? null,
+          selected_skill_code: body.selected_recommendation.skill_code,
+        },
+
+        preview: body.preview_recommendations ?? [],
+        recommendations: [body.selected_recommendation],
+
+        email_status: "pending" as DeliveryStatus,
+        sms_status: "pending" as DeliveryStatus,
+        whatsapp_status: "pending" as DeliveryStatus,
+
+        email_sent_at: null,
+        sms_sent_at: null,
+        whatsapp_sent_at: null,
+
+        send_attempts: 0,
+        next_retry_at: null,
+        last_send_attempt_at: null,
+      };
+
+      const { data: inserted, error: insErr } = await supabase
         .from("assessment_submissions_v1")
-        .select("*")
-        .eq("session_id", input.session_id)
-        .maybeSingle();
+        .insert(insertPayload)
+        .select("id,session_id,email,email_status,email_sent_at,send_attempts,created_at")
+        .single<SubmissionRow>();
 
-      if (error) return NextResponse.json({ message: error.message }, { status: 500 });
-      if (!data) return NextResponse.json({ message: "Submission not found" }, { status: 404 });
-
-      rows = [data as SubmissionRow];
+      if (insErr) return NextResponse.json({ message: insErr.message }, { status: 500 });
+      rowId = inserted.id;
     } else {
-      const limit = input.limit ?? DEFAULT_LIMIT;
-
-      const base = supabase
-        .from("assessment_submissions_v1")
-        .select("*")
-        .or("email_status.eq.pending,email_status.eq.failed,sms_status.eq.pending,sms_status.eq.failed")
-        .lt("send_attempts", MAX_ATTEMPTS)
-        .order("created_at", { ascending: true })
-        .limit(limit);
-
-      const { data, error } = input.force
-        ? await base
-        : await base.or(`next_retry_at.is.null,next_retry_at.lte.${nowIso}`);
-
-      if (error) return NextResponse.json({ message: error.message }, { status: 500 });
-      rows = (data as SubmissionRow[]) ?? [];
-    }
-
-    const mailer = input.send_email ? createMailer() : null;
-    const results: SendResult[] = [];
-
-    for (const sub of rows) {
-      // session_id mode ignores retry window; batch mode respects it
-      const attemptsAfterThisTry = (sub.send_attempts ?? 0) + 1;
-      const attemptAt = new Date().toISOString();
-
-      // record attempt
+      // If exists, update with latest payload so database always has newest details from preview
       await supabase
         .from("assessment_submissions_v1")
         .update({
-          last_send_attempt_at: attemptAt,
-          send_attempts: attemptsAfterThisTry,
+          full_name: body.full_name,
+          phone: body.phone,
+          state: body.state ?? "",
+          city: body.city ?? "",
+          area: body.area ? body.area : null,
+          preview: body.preview_recommendations ?? [],
+          recommendations: [body.selected_recommendation],
+          answers: {
+            ...(body.answers ?? {}),
+            commence: body.commence,
+            wants_training_centre: body.wants_training_centre,
+            location: body.location ?? null,
+            selected_skill_code: body.selected_recommendation.skill_code,
+          },
         })
-        .eq("id", sub.id);
-
-      const { html, text } = buildEmailContent(sub);
-      const smsText = text.length > 600 ? text.slice(0, 600) + "..." : text;
-
-      let emailOk = false;
-      let smsOk = false;
-      let whatsappOk = false;
-
-      try {
-        // EMAIL
-        if (input.send_email && sub.email_status !== "sent") {
-          await mailer!.sendMail({
-            from: `Skill2Earn Padi <${process.env.GMAIL_SMTP_USER!}>`,
-            to: sub.email,
-            subject: "Your Skill2Earn Padi Results",
-            text,
-            html,
-          });
-
-          emailOk = true;
-
-          await supabase
-            .from("assessment_submissions_v1")
-            .update({
-              email_status: "sent",
-              email_sent_at: new Date().toISOString(),
-              last_send_error: null,
-            })
-            .eq("id", sub.id);
-        }
-
-        // SMS
-        if (input.send_sms && sub.sms_status !== "sent") {
-          const to234 = normalizeTo234(sub.phone);
-          if (!isValidPhone(to234)) throw new Error("Stored phone number is invalid");
-          await sendSmsBulkNigeria(to234, smsText);
-
-          smsOk = true;
-
-          await supabase
-            .from("assessment_submissions_v1")
-            .update({
-              sms_status: "sent",
-              sms_sent_at: new Date().toISOString(),
-              last_send_error: null,
-            })
-            .eq("id", sub.id);
-        }
-
-        // WhatsApp placeholder
-        if (input.send_whatsapp && sub.whatsapp_status !== "sent") {
-          whatsappOk = false; // implement provider later
-        }
-
-        // clear retry fields on success
-        await supabase
-          .from("assessment_submissions_v1")
-          .update({
-            next_retry_at: null,
-            last_send_error: null,
-          })
-          .eq("id", sub.id);
-
-        results.push({
-          session_id: sub.session_id,
-          email: { attempted: input.send_email, ok: emailOk },
-          sms: { attempted: input.send_sms, ok: smsOk },
-          whatsapp: { attempted: input.send_whatsapp, ok: whatsappOk },
-          attempts: attemptsAfterThisTry,
-          next_retry_at: null,
-        });
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Send failed";
-        const nextRetryAt = computeNextRetryAt(attemptsAfterThisTry);
-
-        const patch: Partial<SubmissionRow> & {
-          last_send_error: string;
-          next_retry_at: string;
-        } = {
-          last_send_error: msg,
-          next_retry_at: nextRetryAt,
-        };
-
-        if (input.send_email && sub.email_status !== "sent") patch.email_status = "failed";
-        if (input.send_sms && sub.sms_status !== "sent") patch.sms_status = "failed";
-        if (input.send_whatsapp && sub.whatsapp_status !== "sent") patch.whatsapp_status = "failed";
-
-        await supabase.from("assessment_submissions_v1").update(patch).eq("id", sub.id);
-
-        results.push({
-          session_id: sub.session_id,
-          attempts: attemptsAfterThisTry,
-          next_retry_at: nextRetryAt,
-          error: msg,
-        });
-      }
+        .eq("id", existing.id);
+      rowId = existing.id;
     }
 
-    return NextResponse.json({
-      ok: true,
-      picked: rows.length,
-      processed: results.length,
-      limit_used: input.session_id ? 1 : input.limit ?? DEFAULT_LIMIT,
-      results,
-      defaults: { default_limit: DEFAULT_LIMIT, max_attempts: MAX_ATTEMPTS },
+    // If already sent, return success without resending
+    if (existing?.email_status === "sent") {
+      return NextResponse.json({
+        ok: true,
+        already_sent: true,
+        message: "Email already sent",
+        id: rowId,
+      });
+    }
+
+    // Send email now
+    const mailer = createMailer();
+
+    const html = buildWarmEmailHtml({
+      full_name: body.full_name,
+      selected: body.selected_recommendation,
+      commence: body.commence,
+      wants_training_centre: body.wants_training_centre,
+      locationText: body.location?.text ?? "",
     });
+
+    try {
+      await mailer.sendMail({
+        from: process.env.GMAIL_SMTP_USER!,
+        to: body.email,
+        subject: `Your Skill2Earn Result: ${body.selected_recommendation.skill_name}`,
+        html,
+      });
+
+      await supabase
+        .from("assessment_submissions_v1")
+        .update({
+          email_status: "sent",
+          email_sent_at: new Date().toISOString(),
+          send_attempts: (existing?.send_attempts ?? 0) + 1,
+          last_send_attempt_at: new Date().toISOString(),
+        })
+        .eq("id", rowId!);
+
+      return NextResponse.json({
+        ok: true,
+        already_sent: false,
+        message: "Sent successfully",
+        id: rowId,
+      });
+    } catch (mailErr: unknown) {
+      const msg = mailErr instanceof Error ? mailErr.message : "Email send failed";
+
+      await supabase
+        .from("assessment_submissions_v1")
+        .update({
+          email_status: "failed",
+          send_attempts: (existing?.send_attempts ?? 0) + 1,
+          last_send_attempt_at: new Date().toISOString(),
+        })
+        .eq("id", rowId!);
+
+      return NextResponse.json({ message: msg }, { status: 500 });
+    }
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : "Unknown error";
-    return NextResponse.json({ message: msg }, { status: 500 });
+    const msg = e instanceof Error ? e.message : "Invalid request";
+    return NextResponse.json({ message: msg }, { status: 400 });
   }
 }

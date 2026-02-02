@@ -7,7 +7,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-const Schema = z.object({
+const PostSchema = z.object({
   session_id: z.string().min(8).optional(),
 });
 
@@ -17,7 +17,7 @@ function generateSessionId() {
 }
 
 export async function POST(req: Request) {
-  const body = Schema.parse(await req.json());
+  const body = PostSchema.parse(await req.json());
   const session_id = body.session_id ?? generateSessionId();
 
   // Ensure row exists
@@ -39,4 +39,40 @@ export async function POST(req: Request) {
   }
 
   return NextResponse.json({ session_id });
+}
+
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const session_id = searchParams.get("session_id");
+
+  if (!session_id || session_id.length < 8) {
+    return NextResponse.json({ message: "session_id is required" }, { status: 400 });
+  }
+
+  const { data, error } = await supabase
+    .from("result_unlocks")
+    .select("session_id,is_unlocked,unlock_method")
+    .eq("session_id", session_id)
+    .maybeSingle();
+
+  if (error) return NextResponse.json({ message: error.message }, { status: 500 });
+
+  // If missing, auto-create (keeps behavior consistent)
+  if (!data) {
+    const { error: insErr } = await supabase.from("result_unlocks").insert({
+      session_id,
+      is_unlocked: false,
+      unlock_method: "free_beta",
+    });
+
+    if (insErr) return NextResponse.json({ message: insErr.message }, { status: 500 });
+
+    return NextResponse.json({
+      session_id,
+      is_unlocked: false,
+      unlock_method: "free_beta",
+    });
+  }
+
+  return NextResponse.json(data);
 }

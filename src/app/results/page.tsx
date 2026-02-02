@@ -1,287 +1,332 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 
-type FullSkillReport = {
+const SELECTED_RESULT_KEY = "s2e_selected_result_v1";
+
+type PreviewRec = {
   skill_code: string;
   skill_name: string;
-  match_score: number;
-  logic_summary: string;
-  strengths_alignment: string[];
-
-  cost_of_entry: {
-    tool_checklist: string[];
-    startup_cost_breakdown: {
-      training_fees_naira: number;
-      tools_naira: number;
-      data_power_naira: number;
-      total_estimated_naira: number;
-    };
-    maintenance_needs: string[];
-  };
-
-  timeline: {
-    time_to_junior_months: number;
-    first_paycheck_months: number;
-    prerequisites: string[];
-  };
-
-  market_insights: {
-    demand_level: "Hot" | "Steady" | "Slow";
-    income_potential_naira: {
-      entry_level_monthly: string;
-      professional_monthly: string;
-    };
-    top_industries: string[];
-  };
-
-  vibe_check: {
-    day_in_the_life: string[];
-    work_mode: "Remote" | "On-site" | "Hybrid";
-    physical_demand: "Desk job" | "Field work" | "Mix";
-  };
-
-  next_steps: {
-    steps: string[];
-    training_centre_note: string;
-  };
+  score: number;
+  teaser: string[];
 };
 
-type ApiRespOk = {
+type SelectedRec = {
+  skill_code: string;
+  skill_name: string;
+  score: number;
+  reasons: string[];
+  badges: string[];
+  warnings: string[];
+};
+
+type StoredSelected = {
   session_id: string;
-  unlocked: boolean;
-  cached?: boolean;
-  model?: string | null;
-  created_at?: string | null;
-  recommendations: FullSkillReport[];
+  selected: SelectedRec;
+  commence: "NOW" | "WITHIN_3_MONTHS";
+  wants_training_centre: boolean;
+  location: { lat?: number | null; lng?: number | null; text?: string } | null;
+  contact: { full_name: string; email: string; phone: string };
+  preview: PreviewRec[];
 };
 
-const SESSION_KEY = "s2e_session_id";
-
-function naira(n: number) {
-  return `₦${Number(n).toLocaleString()}`;
+function safeParse<T>(raw: string | null): T | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
 }
 
-function isObj(x: unknown): x is Record<string, unknown> {
-  return !!x && typeof x === "object";
+function scoreToPct(score: number) {
+  if (!Number.isFinite(score)) return 0;
+  return score > 1 ? Math.round(score) : Math.round(score * 100);
 }
 
-function getApiMessage(x: unknown): string | null {
-  if (!isObj(x)) return null;
-  return typeof x.message === "string" ? x.message : null;
+function pick<T>(arr: T[] | undefined, n: number) {
+  return (arr ?? []).slice(0, n);
 }
 
-type ViewState = {
-  loading: boolean;
-  error: string | null;
-  data: ApiRespOk | null;
-};
+function loadSelectedFromStorage(): StoredSelected | null {
+  if (typeof window === "undefined") return null;
+  const parsed = safeParse<StoredSelected>(localStorage.getItem(SELECTED_RESULT_KEY));
+  if (!parsed?.session_id || !parsed?.selected?.skill_code || !parsed?.contact?.email) return null;
+  return parsed;
+}
+
+function makeFlagKey(data: StoredSelected) {
+  return `s2e_sent_${data.session_id}_${data.selected.skill_code}_${data.contact.email}`;
+}
+
+/**
+ * Tiny external store for reading "send status" from localStorage.
+ * This avoids:
+ * - setState inside useEffect (your lint rule)
+ * - reading refs during render (your lint rule)
+ */
+const listeners = new Set<() => void>();
+
+function subscribe(cb: () => void) {
+  listeners.add(cb);
+
+  const onStorage = (e: StorageEvent) => {
+    // any relevant storage update can cause a refresh
+    if (e.key && e.key.startsWith("s2e_sent_")) cb();
+  };
+
+  window.addEventListener("storage", onStorage);
+
+  return () => {
+    listeners.delete(cb);
+    window.removeEventListener("storage", onStorage);
+  };
+}
+
+function notify() {
+  for (const l of listeners) l();
+}
+
+function getSendStatus(flagKey: string | null): "idle" | "sending" | "sent" | "failed" {
+  if (!flagKey || typeof window === "undefined") return "idle";
+  const v = localStorage.getItem(flagKey);
+  if (v === "1") return "sent";
+  if (v === "sending") return "sending";
+  if (v === "failed") return "failed";
+  return "idle";
+}
 
 export default function ResultsPage() {
   const router = useRouter();
 
-  const [state, setState] = useState<ViewState>({
-    loading: true,
-    error: null,
-    data: null,
-  });
+  const data = useMemo(() => loadSelectedFromStorage(), []);
 
+  const flagKey = useMemo(() => (data ? makeFlagKey(data) : null), [data]);
+
+  // ✅ This is safe to use during render
+  const sendState = useSyncExternalStore(
+    subscribe,
+    () => getSendStatus(flagKey),
+    () => "idle"
+  );
+
+  const pct = useMemo(() => (data ? scoreToPct(data.selected.score) : 0), [data]);
+
+  const toneIntro = useMemo(() => {
+    if (!data) return "";
+    const name = data.contact.full_name?.split(" ")[0] || data.contact.full_name || "friend";
+    if (pct >= 90) return `Hey ${name} 😄 — this one is a *very* strong match.`;
+    if (pct >= 75) return `Hey ${name} — this is a solid match. We can work with this! 😄`;
+    return `Hey ${name} — this can work, and we’ll make it work step-by-step 😄`;
+  }, [data, pct]);
+
+  const jokeLine = useMemo(() => {
+    if (!data) return "";
+    if (pct >= 90) return "If this score was a person, it would already be sending you a ‘let’s start’ text 😄";
+    if (pct >= 75) return "Not perfect — but perfection is expensive anyway. We move 😄";
+    return "The good news: you don’t need superpowers. You need consistency. (Way harder, I know 😄)";
+  }, [data, pct]);
+
+  const commenceLine = useMemo(() => {
+    if (!data) return "";
+    return data.commence === "NOW"
+      ? "You said you’re ready to start **now** — that’s the best advantage you can give yourself."
+      : "You said **within 3 months** — great. We’ll keep it simple and realistic, no pressure vibes.";
+  }, [data]);
+
+  const actionCTA = useMemo(() => {
+    if (!data) return "";
+    return data.commence === "NOW"
+      ? "Next move: choose a small learning plan for **this week** and start today. Yes, today 😄"
+      : "Next move: pick a start date inside the next 2 weeks. Future-you will thank you 😄";
+  }, [data]);
+
+  const sendMsg = useMemo(() => {
+    if (sendState === "sending") return "Sending your result to your email…";
+    if (sendState === "sent") return "✅ We’ve sent your result to your email. Check inbox (and spam/junk just in case).";
+    if (sendState === "failed") return "Email sending failed. Refresh this page to retry.";
+    return null;
+  }, [sendState]);
+
+  // ✅ Effect does only side-effects (no setState, no refs read in render)
   useEffect(() => {
-    let cancelled = false;
+    if (!data || !flagKey) return;
 
-    const run = async () => {
-      const session_id = localStorage.getItem(SESSION_KEY);
+    const current = localStorage.getItem(flagKey);
+    if (current === "1") return; // already sent
+    if (current === "sending") return; // already in progress
 
-      if (!session_id) {
-        // ✅ one state update (avoids the eslint warning)
-        if (!cancelled) {
-          setState({ loading: false, error: "No session found. Go back to preview and unlock first.", data: null });
-        }
-        return;
-      }
+    // mark as sending
+    localStorage.setItem(flagKey, "sending");
+    notify();
 
-      try {
-        const r = await fetch("/api/results-ai", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id }),
-        });
+    const payload = {
+      session_id: data.session_id,
+      state: "",
+      city: "",
+      area: "",
 
-        const json: unknown = await r.json();
+      full_name: data.contact.full_name,
+      email: data.contact.email,
+      phone: data.contact.phone,
 
-        if (!r.ok) {
-          const msg = getApiMessage(json) ?? "Failed to load results";
-          throw new Error(msg);
-        }
+      commence: data.commence,
+      wants_training_centre: data.wants_training_centre,
+      location: data.wants_training_centre ? data.location : null,
 
-        // basic shape check
-        if (!isObj(json) || !Array.isArray((json as Record<string, unknown>).recommendations)) {
-          throw new Error("Unexpected response from server.");
-        }
+      preview_recommendations: data.preview,
+      selected_recommendation: data.selected,
 
-        if (!cancelled) {
-          setState({ loading: false, error: null, data: json as ApiRespOk });
-        }
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : "Unknown error";
-        if (!cancelled) {
-          setState({ loading: false, error: msg, data: null });
-        }
-      }
+      answers: {
+        commence: data.commence,
+        wants_training_centre: data.wants_training_centre,
+        location: data.location,
+      },
     };
 
-    run();
+    fetch("/api/send-results", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+      .then(async (res) => {
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error((json && (json.message || json.error)) || "Failed to send email");
+        localStorage.setItem(flagKey, "1");
+        notify();
+      })
+      .catch(() => {
+        localStorage.setItem(flagKey, "failed");
+        notify();
+      });
+  }, [data, flagKey]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  if (state.loading) {
+  if (!data) {
     return (
-      <div className="container py-5" style={{ maxWidth: 960 }}>
-        <div className="alert alert-info">Loading your full results…</div>
+      <div className="container py-5">
+        <div className="alert alert-warning">
+          No selected result found. Please go back and select a skill on the preview page.
+        </div>
+        <div className="d-flex gap-2">
+          <button className="btn btn-primary" onClick={() => router.push("/preview")}>
+            Back to Preview
+          </button>
+          <button className="btn btn-outline-primary" onClick={() => router.push("/assessment")}>
+            Retake Assessment
+          </button>
+        </div>
       </div>
     );
   }
 
-  if (state.error) {
-    return (
-      <div className="container py-5" style={{ maxWidth: 960 }}>
-        <div className="alert alert-danger">{state.error}</div>
-        <button className="btn btn-outline-primary" onClick={() => router.push("/preview")}>
-          Back to Preview
-        </button>
-      </div>
-    );
-  }
+  const selected = data.selected;
 
-  const recs = (state.data?.recommendations ?? []).slice(0, 3);
+  const reasons = pick(selected.reasons, 4);
+  const badges = pick(selected.badges, 6);
+  const warnings = pick(selected.warnings, 2);
 
   return (
     <div className="bg-light min-vh-100">
       <div className="bg-white border-bottom">
-        <div className="container py-3 d-flex align-items-center justify-content-between">
-          <div>
-            <div className="fw-bold text-primary">Skill2Earn Padi</div>
-            <div className="text-muted small">Full Results</div>
-          </div>
-          <button className="btn btn-outline-primary" onClick={() => router.push("/preview")}>
-            Back to Preview
-          </button>
+        <div className="container py-3">
+          <div className="fw-bold text-primary">Your Selected Skill Result</div>
+          <div className="text-muted small">This page shows only your chosen skill (no distractions).</div>
         </div>
       </div>
 
-      <div className="container py-4" style={{ maxWidth: 960 }}>
-        {recs.map((r) => (
-          <div className="card shadow-sm border-0 mb-4" key={r.skill_code}>
-            <div className="card-body p-4">
-              <div className="d-flex justify-content-between align-items-start gap-3 flex-wrap">
-                <div>
-                  <div className="text-muted small">Recommendation</div>
-                  <h2 className="h4 mb-1">{r.skill_name}</h2>
-                  <div className="text-muted small">Code: {r.skill_code}</div>
+      <div className="container py-4">
+        <div className="card shadow-sm border-0">
+          <div className="card-body p-4">
+            <div className="d-flex flex-wrap align-items-start justify-content-between gap-2">
+              <div>
+                <div className="text-muted small">Selected Skill</div>
+                <h1 className="h4 mb-0">{selected.skill_name}</h1>
+              </div>
+              <span className="badge bg-success-subtle text-success">Match: {pct}%</span>
+            </div>
+
+            <div className="mt-3">
+              <div className="fw-semibold">{toneIntro}</div>
+              <div className="text-muted mt-1">{jokeLine}</div>
+            </div>
+
+            <div className="mt-3 p-3 rounded bg-white border">
+              <div className="fw-semibold">Quick plan check</div>
+              <div className="mt-1">{commenceLine}</div>
+              <div className="mt-2">{actionCTA}</div>
+              {data.wants_training_centre && (
+                <div className="text-muted small mt-2">
+                  You asked us to connect you to the nearest training centre — we’ll follow up using your details.
                 </div>
-                <span className="badge text-bg-primary">Match {r.match_score}%</span>
+              )}
+            </div>
+
+            {badges.length > 0 && (
+              <div className="mt-3 d-flex flex-wrap gap-2">
+                {badges.map((b, i) => (
+                  <span key={i} className="badge bg-primary-subtle text-primary">
+                    {b}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {reasons.length > 0 && (
+              <div className="mt-4">
+                <div className="fw-semibold">Why we recommended this</div>
+                <ul className="mb-0 mt-2">
+                  {reasons.map((r, i) => (
+                    <li key={i}>{r}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {warnings.length > 0 && (
+              <div className="mt-4">
+                <div className="fw-semibold text-danger">Small things to watch out for</div>
+                <ul className="mb-0 mt-2">
+                  {warnings.map((w, i) => (
+                    <li key={i}>{w}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div className="mt-4 p-3 rounded bg-white border">
+              <div className="fw-semibold">Do this next (simple)</div>
+              <ol className="mb-0 mt-2">
+                <li>Pick 1 beginner resource and start today (30–45 mins).</li>
+                <li>Build a tiny practice project this week.</li>
+                <li>Ask someone to check your progress after 7 days 😄</li>
+              </ol>
+            </div>
+
+            <hr className="my-4" />
+
+            <div className="d-flex flex-wrap align-items-center justify-content-between gap-2">
+              <div>
+                {sendState === "sending" && <div className="text-muted">{sendMsg}</div>}
+                {sendState === "sent" && <div className="text-success">{sendMsg}</div>}
+                {sendState === "failed" && <div className="text-danger">{sendMsg}</div>}
               </div>
 
-              <hr />
-
-              <h3 className="h6 mb-2">1) Why this fits you</h3>
-              <div className="mb-2">{r.logic_summary}</div>
-              <div className="fw-semibold small mb-1">Strengths alignment</div>
-              <ul className="mb-3">
-                {r.strengths_alignment.map((x, i) => (
-                  <li key={i}>{x}</li>
-                ))}
-              </ul>
-
-              <h3 className="h6 mb-2">2) Financial & resource reality (Cost of entry)</h3>
-              <div className="row g-3 mb-2">
-                <div className="col-12 col-md-6">
-                  <div className="fw-semibold small">Tool checklist</div>
-                  <ul className="mb-0">
-                    {r.cost_of_entry.tool_checklist.map((x, i) => (
-                      <li key={i}>{x}</li>
-                    ))}
-                  </ul>
-                </div>
-                <div className="col-12 col-md-6">
-                  <div className="fw-semibold small">Estimated startup cost</div>
-                  <ul className="mb-0">
-                    <li>Training: {naira(r.cost_of_entry.startup_cost_breakdown.training_fees_naira)}</li>
-                    <li>Tools: {naira(r.cost_of_entry.startup_cost_breakdown.tools_naira)}</li>
-                    <li>Data/Power: {naira(r.cost_of_entry.startup_cost_breakdown.data_power_naira)}</li>
-                    <li className="fw-semibold">
-                      Total: {naira(r.cost_of_entry.startup_cost_breakdown.total_estimated_naira)}
-                    </li>
-                  </ul>
-                </div>
+              <div className="d-flex gap-2">
+                <button className="btn btn-outline-primary" onClick={() => router.push("/preview")}>
+                  Back to Preview
+                </button>
+                <button className="btn btn-primary" onClick={() => router.push("/assessment")}>
+                  Retake Assessment
+                </button>
               </div>
-              <div className="fw-semibold small">Maintenance needs</div>
-              <ul className="mb-3">
-                {r.cost_of_entry.maintenance_needs.map((x, i) => (
-                  <li key={i}>{x}</li>
-                ))}
-              </ul>
+            </div>
 
-              <h3 className="h6 mb-2">3) Learning & earning roadmap (Timeline)</h3>
-              <ul className="mb-2">
-                <li>
-                  Time to junior level: <b>{r.timeline.time_to_junior_months}</b> months
-                </li>
-                <li>
-                  First paycheck milestone: <b>{r.timeline.first_paycheck_months}</b> months
-                </li>
-              </ul>
-              <div className="fw-semibold small">Prerequisites</div>
-              <ul className="mb-3">
-                {r.timeline.prerequisites.map((x, i) => (
-                  <li key={i}>{x}</li>
-                ))}
-              </ul>
-
-              <h3 className="h6 mb-2">4) Market insights (Profitability)</h3>
-              <ul className="mb-2">
-                <li>
-                  Demand level: <b>{r.market_insights.demand_level}</b>
-                </li>
-                <li>Entry-level monthly: {r.market_insights.income_potential_naira.entry_level_monthly}</li>
-                <li>Professional monthly: {r.market_insights.income_potential_naira.professional_monthly}</li>
-              </ul>
-              <div className="fw-semibold small">Top industries</div>
-              <ul className="mb-3">
-                {r.market_insights.top_industries.map((x, i) => (
-                  <li key={i}>{x}</li>
-                ))}
-              </ul>
-
-              <h3 className="h6 mb-2">5) Daily life preview (Vibe check)</h3>
-              <ul className="mb-2">
-                {r.vibe_check.day_in_the_life.map((x, i) => (
-                  <li key={i}>{x}</li>
-                ))}
-              </ul>
-              <ul className="mb-3">
-                <li>
-                  Work mode: <b>{r.vibe_check.work_mode}</b>
-                </li>
-                <li>
-                  Physical demand: <b>{r.vibe_check.physical_demand}</b>
-                </li>
-              </ul>
-
-              <h3 className="h6 mb-2">6) Next steps</h3>
-              <ul className="mb-2">
-                {r.next_steps.steps.map((x, i) => (
-                  <li key={i}>{x}</li>
-                ))}
-              </ul>
-              <div className="alert alert-success mb-0">{r.next_steps.training_centre_note}</div>
+            <div className="text-muted small mt-3">
+              Tip: If you feel “I’m not ready”, that’s normal. Start anyway. Readiness comes *after* action 😄
             </div>
           </div>
-        ))}
+        </div>
       </div>
     </div>
   );

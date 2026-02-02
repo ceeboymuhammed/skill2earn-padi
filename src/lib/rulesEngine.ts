@@ -1,5 +1,3 @@
-// src/lib/rulesEngine.ts
-
 export type UtilityReliability = "none" | "outages" | "stable";
 export type EquipmentAccess = "none" | "smartphone_only" | "laptop_pc";
 
@@ -110,6 +108,10 @@ function clamp01(x: number): number {
   return Math.max(0, Math.min(1, x));
 }
 
+function clampScore(x: number): number {
+  return Math.max(0, Math.min(100, Math.round(x)));
+}
+
 function prereqRank(x: SkillRow["prerequisite_proficiency"]): number {
   const v = (x || "").toLowerCase();
   if (v.includes("basic_smartphone")) return 0;
@@ -203,20 +205,21 @@ export function runRecommendationPipeline(user: AssessmentPayload, skills: Skill
       .slice()
       .sort((a, b) => a.min_budget_naira - b.min_budget_naira)
       .slice(0, 3)
-      .map((s) => ({
+      .map((s, idx) => ({
         skill_code: s.skill_code,
         skill_name: s.name,
-        score: 1,
+        score: clampScore(55 - idx * 5),
         reasons: [
           "Your constraints remove most options right now.",
-          "This is one of the lowest-cost options in the dataset. Consider increasing budget or improving tools access.",
+          "This is one of the lowest-cost options in the dataset.",
+          "Consider improving tools access or increasing budget to unlock more options.",
         ],
         badges: [],
         warnings: ["Most skills were filtered out based on tools/budget."],
       }));
   }
 
-  // ---------- Stage 2: Infrastructure Validation (penalties/boosts) ----------
+  // ---------- Stage 2: Infrastructure Validation ----------
   const stage2List: Stage2Item[] = stage1Shortlist
     .map((skill) => {
       let stage2Delta = 0;
@@ -224,7 +227,6 @@ export function runRecommendationPipeline(user: AssessmentPayload, skills: Skill
       const pRank = powerNeedRank(skill.power_need);
       const iRank = internetNeedRank(skill.internet_need);
 
-      // Utility reliability adjustments
       if (user.utility_reliability === "none") {
         if (pRank >= 2) stage2Delta -= 15;
         if (iRank >= 2) stage2Delta -= 15;
@@ -233,7 +235,6 @@ export function runRecommendationPipeline(user: AssessmentPayload, skills: Skill
         if (iRank === 3) stage2Delta -= 10;
       }
 
-      // Mobility match
       if (user.mobility === "Remote") {
         if (skill.work_location === "Remote") stage2Delta += 8;
         else if (skill.work_location === "Hybrid") stage2Delta += 4;
@@ -244,7 +245,6 @@ export function runRecommendationPipeline(user: AssessmentPayload, skills: Skill
         if (skill.work_location === "Hybrid") stage2Delta += 6;
       }
 
-      // Workspace preference heuristic
       const digital = isDigitalish(skill);
       if (user.workspace_preference === "desk" && digital) stage2Delta += 4;
       if (user.workspace_preference === "hands_on" && !digital) stage2Delta += 4;
@@ -253,7 +253,6 @@ export function runRecommendationPipeline(user: AssessmentPayload, skills: Skill
 
       return { skill, stage2Delta };
     })
-    // only hard-remove the most impossible when utility is "none" AND both needs are maxed
     .filter(({ skill }) => {
       if (user.utility_reliability !== "none") return true;
       const pRank = powerNeedRank(skill.power_need);
@@ -268,23 +267,20 @@ export function runRecommendationPipeline(user: AssessmentPayload, skills: Skill
     const I = scoreInterest(user.primary_interest, skill.primary_goal);
     const Pa = scorePatience(user.patience_level, skill.patience_level);
 
-    const base = 0.3 * P + 0.3 * M + 0.2 * I + 0.2 * Pa; // 0..1
-    let score = Math.round(clamp01(base) * 100);
+    const base = 0.3 * P + 0.3 * M + 0.2 * I + 0.2 * Pa;
+    let score = clampScore(clamp01(base) * 100);
 
-    score = Math.max(0, Math.min(100, score + stage2Delta));
+    score = clampScore(score + stage2Delta);
 
     const reasons: string[] = [];
 
-    // strong matches
     if (P >= 0.9) reasons.push("Matches your social work style (introvert/extrovert mix).");
     if (M >= 0.9) reasons.push("Matches how you naturally solve problems.");
     if (I >= 0.9) reasons.push("Matches what you find most interesting.");
     if (Pa >= 0.9) reasons.push("Matches your patience level for learning.");
 
-    // Always include feasibility reason
     reasons.push(`Fits within your seed capital (min ₦${skill.min_budget_naira.toLocaleString()}).`);
 
-    // Environment note
     if (user.utility_reliability !== "stable") {
       reasons.push("Your utility reliability was considered in this recommendation.");
     }
@@ -302,12 +298,10 @@ export function runRecommendationPipeline(user: AssessmentPayload, skills: Skill
     const hasLaptop = user.equipment_access === "laptop_pc";
     const pc = user.computer_proficiency ?? null;
 
-    // Computer Fundamentals badge
     if (hasLaptop && pc !== null && pc <= 2 && isDigitalish(skill)) {
       badges.push("Start with Computer Fundamentals first");
     }
 
-    // Urgency mismatch warning
     if (user.income_urgency === "quick") {
       const tEarn = skill.time_to_earn_months ?? null;
       if (tEarn !== null && tEarn > 3) {
@@ -325,7 +319,6 @@ export function runRecommendationPipeline(user: AssessmentPayload, skills: Skill
     };
   });
 
-  // Add “backup skill” suggestion to top recommendation if urgency mismatch
   if (user.income_urgency === "quick" && out.length >= 2) {
     const topSkillCode = out[0].skill_code;
     const topSkill = scored.find((x) => x.skill.skill_code === topSkillCode)?.skill;

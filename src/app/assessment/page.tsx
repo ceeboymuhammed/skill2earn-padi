@@ -36,10 +36,6 @@ type AssessmentDraft = {
 
   income_urgency: IncomeUrgency | "";
   primary_interest: PrimaryInterest | "";
-
-  full_name: string;
-  email: string;
-  phone: string;
 };
 
 type RecommendPreviewResponse = {
@@ -81,28 +77,10 @@ const emptyDraft: AssessmentDraft = {
 
   income_urgency: "",
   primary_interest: "",
-
-  full_name: "",
-  email: "",
-  phone: "",
 };
 
 function isNonEmpty<T extends string>(v: T | ""): v is T {
   return v !== "";
-}
-
-function isValidEmail(email: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
-}
-
-function normalizePhone(phone: string) {
-  return phone.replace(/[^\d+]/g, "").trim();
-}
-
-function isValidPhone(phone: string) {
-  const p = normalizePhone(phone);
-  const digits = p.startsWith("+") ? p.slice(1) : p;
-  return /^\d{10,15}$/.test(digits);
 }
 
 function getApiErrorMessage(json: unknown): string | null {
@@ -133,6 +111,18 @@ export default function AssessmentPage() {
 
   const [error, setError] = useState<string | null>(null);
 
+  const steps = useMemo(() => {
+    return ["Location", "Tools & Budget", "Utilities", "Work Style", "Brain & Temperament", "Goals"];
+  }, []);
+
+  const totalSteps = steps.length;
+  const progressPct = Math.round(((step + 1) / totalSteps) * 100);
+
+  const needsComputerProficiency = useMemo(() => {
+    // If user has no laptop/pc, computer proficiency becomes irrelevant
+    return draft.equipment_access !== "" && draft.equipment_access !== "smartphone_only";
+  }, [draft.equipment_access]);
+
   useEffect(() => {
     try {
       const raw = localStorage.getItem(LS_KEY);
@@ -152,15 +142,6 @@ export default function AssessmentPage() {
     }
   }, [draft]);
 
-  const needsComputerProficiency = draft.equipment_access === "laptop_pc";
-
-  const steps = useMemo(() => {
-    return ["Location", "Tools & Budget", "Utilities", "Work Style", "Brain & Temperament", "Goals", "Contact"];
-  }, []);
-
-  const totalSteps = steps.length;
-  const progressPct = Math.round(((step + 1) / totalSteps) * 100);
-
   // ✅ used in JSX (fixes unused warning)
   function update<K extends keyof AssessmentDraft>(key: K, value: AssessmentDraft[K]) {
     setDraft((d) => ({ ...d, [key]: value }));
@@ -178,9 +159,7 @@ export default function AssessmentPage() {
 
     if (step === 2) return isNonEmpty(draft.utility_reliability);
 
-    if (step === 3) {
-      return isNonEmpty(draft.workspace_preference) && isNonEmpty(draft.social_battery) && isNonEmpty(draft.mobility);
-    }
+    if (step === 3) return isNonEmpty(draft.workspace_preference) && isNonEmpty(draft.social_battery) && isNonEmpty(draft.mobility);
 
     if (step === 4) {
       return (
@@ -193,13 +172,6 @@ export default function AssessmentPage() {
 
     if (step === 5) return isNonEmpty(draft.income_urgency) && isNonEmpty(draft.primary_interest);
 
-    if (step === 6) {
-      if (draft.full_name.trim().length < 2) return false;
-      if (!isValidEmail(draft.email)) return false;
-      if (!isValidPhone(draft.phone)) return false;
-      return true;
-    }
-
     return true;
   }
 
@@ -207,7 +179,7 @@ export default function AssessmentPage() {
   function next() {
     setError(null);
     if (!canGoNext()) {
-      setError("Please answer all required questions on this page.");
+      setError("Please answer all required questions before continuing.");
       return;
     }
     setStep((s) => Math.min(totalSteps - 1, s + 1));
@@ -242,10 +214,7 @@ export default function AssessmentPage() {
       isNonEmpty(draft.patience_level) &&
       isNonEmpty(draft.learning_style) &&
       isNonEmpty(draft.income_urgency) &&
-      isNonEmpty(draft.primary_interest) &&
-      draft.full_name.trim().length >= 2 &&
-      isValidEmail(draft.email) &&
-      isValidPhone(draft.phone);
+      isNonEmpty(draft.primary_interest);
 
     if (!finalOk) {
       setError("Some required answers are missing.");
@@ -265,10 +234,6 @@ export default function AssessmentPage() {
 
       const payload = {
         session_id,
-
-        full_name: draft.full_name.trim(),
-        email: draft.email.trim().toLowerCase(),
-        phone: normalizePhone(draft.phone),
 
         state: draft.state.trim(),
         city: draft.city.trim(),
@@ -332,41 +297,28 @@ export default function AssessmentPage() {
         <div className="container py-3 d-flex align-items-center justify-content-between">
           <div>
             <div className="fw-bold text-primary">Skill2Earn Padi</div>
-            <div className="text-muted small">Skill Fit Assessment</div>
+            <div className="text-muted small">Answer a few questions and get 3 best skill matches.</div>
           </div>
-          <button
-            className="btn btn-outline-primary"
-            onClick={() => {
-              localStorage.removeItem(LS_KEY);
-              setDraft(emptyDraft);
-              setStep(0);
-              setError(null);
-            }}
-            disabled={loading}
-          >
-            Reset
-          </button>
+          <div className="text-muted small">
+            Step {step + 1} of {totalSteps}
+          </div>
         </div>
       </div>
 
-      <div className="container py-4" style={{ maxWidth: 860 }}>
-        <div className="mb-3">
-          <div className="d-flex justify-content-between align-items-center mb-2">
-            <div className="fw-semibold">
-              Step {step + 1} of {totalSteps}: {steps[step]}
-            </div>
-            <div className="text-muted small">{progressPct}%</div>
-          </div>
-          <div className="progress" style={{ height: 10 }}>
-            <div className="progress-bar bg-primary" role="progressbar" style={{ width: `${progressPct}%` }} />
-          </div>
-        </div>
-
-        {loading && <div className="alert alert-info">Submitting your answers...</div>}
-        {error && <div className="alert alert-danger">{error}</div>}
-
+      <div className="container py-4">
         <div className="card shadow-sm border-0">
           <div className="card-body p-4">
+            <div className="d-flex align-items-center justify-content-between mb-3">
+              <div className="fw-semibold">{steps[step]}</div>
+              <div className="text-muted small">{progressPct}%</div>
+            </div>
+
+            <div className="progress mb-4" style={{ height: 8 }}>
+              <div className="progress-bar" role="progressbar" style={{ width: `${progressPct}%` }} />
+            </div>
+
+            {error && <div className="alert alert-danger">{error}</div>}
+
             {/* ✅ STEP 0 */}
             {step === 0 && (
               <>
@@ -392,25 +344,21 @@ export default function AssessmentPage() {
             {/* ✅ STEP 1 */}
             {step === 1 && (
               <>
-                <h2 className="h5 mb-3">Your tools and budget</h2>
+                <h2 className="h5 mb-3">Tools & Budget</h2>
 
-                <div className="mb-4">
-                  <div className="fw-semibold mb-2">1) Which tools do you have access to? *</div>
-
-                  <div className="d-grid gap-2">
+                <div className="mb-3">
+                  <label className="form-label">What device do you have access to? *</label>
+                  <div className="d-flex flex-wrap gap-2">
                     {[
-                      { v: "none", label: "None (Manual tools only)" },
+                      { v: "none", label: "None" },
                       { v: "smartphone_only", label: "Smartphone only" },
-                      { v: "laptop_pc", label: "Laptop/desktop + Smartphone" },
+                      { v: "laptop_pc", label: "Laptop/PC" },
                     ].map((o) => (
                       <button
                         key={o.v}
                         type="button"
-                        className={`btn text-start ${draft.equipment_access === o.v ? "btn-primary" : "btn-outline-primary"}`}
-                        onClick={() => {
-                          update("equipment_access", o.v as EquipmentAccess);
-                          if (o.v !== "laptop_pc") update("computer_proficiency", "");
-                        }}
+                        className={`btn ${draft.equipment_access === o.v ? "btn-primary" : "btn-outline-primary"}`}
+                        onClick={() => update("equipment_access", o.v as EquipmentAccess)}
                       >
                         {o.label}
                       </button>
@@ -419,28 +367,24 @@ export default function AssessmentPage() {
                 </div>
 
                 {needsComputerProficiency && (
-                  <div className="mb-4">
-                    <div className="fw-semibold mb-2">2) Computer proficiency (1–5) *</div>
-                    <div className="d-flex flex-wrap gap-2">
-                      {[1, 2, 3, 4, 5].map((n) => (
-                        <button
-                          key={n}
-                          type="button"
-                          className={`btn ${draft.computer_proficiency === n ? "btn-primary" : "btn-outline-primary"}`}
-                          onClick={() => update("computer_proficiency", n)}
-                        >
-                          {n}
-                        </button>
-                      ))}
-                    </div>
+                  <div className="mb-3">
+                    <label className="form-label">How comfortable are you using a computer? (1–10) *</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={10}
+                      className="form-control"
+                      value={draft.computer_proficiency}
+                      onChange={(e) => update("computer_proficiency", e.target.value === "" ? "" : Number(e.target.value))}
+                    />
                   </div>
                 )}
 
-                <div className="mb-0">
-                  <div className="fw-semibold mb-2">3) Seed capital *</div>
-                  <div className="d-grid gap-2">
+                <div className="mb-3">
+                  <label className="form-label">How much seed capital can you start with? *</label>
+                  <div className="d-flex flex-wrap gap-2">
                     {[
-                      { v: "below_50", label: "Below ₦50,000" },
+                      { v: "below_50", label: "Below ₦50k" },
                       { v: "50_100", label: "₦50k – ₦100k" },
                       { v: "100_200", label: "₦100k – ₦200k" },
                       { v: "200_400", label: "₦200k – ₦400k" },
@@ -449,7 +393,7 @@ export default function AssessmentPage() {
                       <button
                         key={o.v}
                         type="button"
-                        className={`btn text-start ${draft.seed_capital === o.v ? "btn-primary" : "btn-outline-primary"}`}
+                        className={`btn ${draft.seed_capital === o.v ? "btn-primary" : "btn-outline-primary"}`}
                         onClick={() => update("seed_capital", o.v as SeedCapitalBracket)}
                       >
                         {o.label}
@@ -463,23 +407,26 @@ export default function AssessmentPage() {
             {/* ✅ STEP 2 */}
             {step === 2 && (
               <>
-                <h2 className="h5 mb-3">Your electricity & internet reality</h2>
-                <div className="fw-semibold mb-2">4) How reliable is your power/internet? *</div>
-                <div className="d-grid gap-2">
-                  {[
-                    { v: "none", label: "No reliable access" },
-                    { v: "outages", label: "Frequent outages" },
-                    { v: "stable", label: "Always stable" },
-                  ].map((o) => (
-                    <button
-                      key={o.v}
-                      type="button"
-                      className={`btn text-start ${draft.utility_reliability === o.v ? "btn-primary" : "btn-outline-primary"}`}
-                      onClick={() => update("utility_reliability", o.v as UtilityReliability)}
-                    >
-                      {o.label}
-                    </button>
-                  ))}
+                <h2 className="h5 mb-3">Utilities</h2>
+
+                <div className="mb-3">
+                  <label className="form-label">How reliable is electricity/internet for you? *</label>
+                  <div className="d-flex flex-wrap gap-2">
+                    {[
+                      { v: "none", label: "Not reliable" },
+                      { v: "outages", label: "Sometimes outages" },
+                      { v: "stable", label: "Mostly stable" },
+                    ].map((o) => (
+                      <button
+                        key={o.v}
+                        type="button"
+                        className={`btn ${draft.utility_reliability === o.v ? "btn-primary" : "btn-outline-primary"}`}
+                        onClick={() => update("utility_reliability", o.v as UtilityReliability)}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </>
             )}
@@ -487,59 +434,66 @@ export default function AssessmentPage() {
             {/* ✅ STEP 3 */}
             {step === 3 && (
               <>
-                <h2 className="h5 mb-3">Your work style</h2>
-                <div className="fw-semibold mb-2">5) Hands-on or desk work? *</div>
-                <div className="d-grid gap-2 mb-4">
-                  {[
-                    { v: "hands_on", label: "Hands-on / Physical" },
-                    { v: "desk", label: "Desk-based / Digital" },
-                    { v: "mix", label: "A mix of both" },
-                  ].map((o) => (
-                    <button
-                      key={o.v}
-                      type="button"
-                      className={`btn text-start ${draft.workspace_preference === o.v ? "btn-primary" : "btn-outline-primary"}`}
-                      onClick={() => update("workspace_preference", o.v as WorkspacePreference)}
-                    >
-                      {o.label}
-                    </button>
-                  ))}
+                <h2 className="h5 mb-3">Work Style</h2>
+
+                <div className="mb-3">
+                  <label className="form-label">Preferred work type *</label>
+                  <div className="d-flex flex-wrap gap-2">
+                    {[
+                      { v: "hands_on", label: "Hands-on" },
+                      { v: "desk", label: "Desk/Computer" },
+                      { v: "mix", label: "Mix" },
+                    ].map((o) => (
+                      <button
+                        key={o.v}
+                        type="button"
+                        className={`btn ${draft.workspace_preference === o.v ? "btn-primary" : "btn-outline-primary"}`}
+                        onClick={() => update("workspace_preference", o.v as WorkspacePreference)}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
-                <div className="fw-semibold mb-2">6) Social battery *</div>
-                <div className="d-grid gap-2 mb-4">
-                  {[
-                    { v: "Introvert", label: "Mostly alone (Introvert)" },
-                    { v: "Extrovert", label: "Mostly with people (Extrovert)" },
-                    { v: "Mix", label: "A mix of both" },
-                  ].map((o) => (
-                    <button
-                      key={o.v}
-                      type="button"
-                      className={`btn text-start ${draft.social_battery === o.v ? "btn-primary" : "btn-outline-primary"}`}
-                      onClick={() => update("social_battery", o.v as SocialBattery)}
-                    >
-                      {o.label}
-                    </button>
-                  ))}
+                <div className="mb-3">
+                  <label className="form-label">Social battery *</label>
+                  <div className="d-flex flex-wrap gap-2">
+                    {[
+                      { v: "Introvert", label: "Introvert" },
+                      { v: "Mix", label: "Mix" },
+                      { v: "Extrovert", label: "Extrovert" },
+                    ].map((o) => (
+                      <button
+                        key={o.v}
+                        type="button"
+                        className={`btn ${draft.social_battery === o.v ? "btn-primary" : "btn-outline-primary"}`}
+                        onClick={() => update("social_battery", o.v as SocialBattery)}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
-                <div className="fw-semibold mb-2">7) Mobility *</div>
-                <div className="d-grid gap-2">
-                  {[
-                    { v: "Remote", label: "Remote" },
-                    { v: "On-site", label: "On-site" },
-                    { v: "Hybrid", label: "Hybrid" },
-                  ].map((o) => (
-                    <button
-                      key={o.v}
-                      type="button"
-                      className={`btn text-start ${draft.mobility === o.v ? "btn-primary" : "btn-outline-primary"}`}
-                      onClick={() => update("mobility", o.v as Mobility)}
-                    >
-                      {o.label}
-                    </button>
-                  ))}
+                <div className="mb-3">
+                  <label className="form-label">Work location preference *</label>
+                  <div className="d-flex flex-wrap gap-2">
+                    {[
+                      { v: "Remote", label: "Remote" },
+                      { v: "Hybrid", label: "Hybrid" },
+                      { v: "On-site", label: "On-site" },
+                    ].map((o) => (
+                      <button
+                        key={o.v}
+                        type="button"
+                        className={`btn ${draft.mobility === o.v ? "btn-primary" : "btn-outline-primary"}`}
+                        onClick={() => update("mobility", o.v as Mobility)}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </>
             )}
@@ -547,77 +501,85 @@ export default function AssessmentPage() {
             {/* ✅ STEP 4 */}
             {step === 4 && (
               <>
-                <h2 className="h5 mb-3">Brain & temperament</h2>
+                <h2 className="h5 mb-3">Brain & Temperament</h2>
 
-                <div className="fw-semibold mb-2">8) Problem instinct *</div>
-                <div className="d-grid gap-2 mb-4">
-                  {[
-                    { v: "Creative", label: "Creative" },
-                    { v: "Analytical", label: "Analytical" },
-                    { v: "Adversarial", label: "Adversarial" },
-                  ].map((o) => (
-                    <button
-                      key={o.v}
-                      type="button"
-                      className={`btn text-start ${draft.problem_instinct === o.v ? "btn-primary" : "btn-outline-primary"}`}
-                      onClick={() => update("problem_instinct", o.v as ProblemInstinct)}
-                    >
-                      {o.label}
-                    </button>
-                  ))}
+                <div className="mb-3">
+                  <label className="form-label">How do you like to solve problems? *</label>
+                  <div className="d-flex flex-wrap gap-2">
+                    {[
+                      { v: "Creative", label: "Creative" },
+                      { v: "Analytical", label: "Analytical" },
+                      { v: "Adversarial", label: "Adversarial" },
+                    ].map((o) => (
+                      <button
+                        key={o.v}
+                        type="button"
+                        className={`btn ${draft.problem_instinct === o.v ? "btn-primary" : "btn-outline-primary"}`}
+                        onClick={() => update("problem_instinct", o.v as ProblemInstinct)}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
-                <div className="fw-semibold mb-2">9) Math/logic comfort *</div>
-                <div className="d-grid gap-2 mb-4">
-                  {[
-                    { v: "High", label: "High" },
-                    { v: "Moderate", label: "Moderate" },
-                    { v: "Low", label: "Low" },
-                  ].map((o) => (
-                    <button
-                      key={o.v}
-                      type="button"
-                      className={`btn text-start ${draft.math_logic_comfort === o.v ? "btn-primary" : "btn-outline-primary"}`}
-                      onClick={() => update("math_logic_comfort", o.v as Comfort)}
-                    >
-                      {o.label}
-                    </button>
-                  ))}
+                <div className="mb-3">
+                  <label className="form-label">Comfort with math/logic *</label>
+                  <div className="d-flex flex-wrap gap-2">
+                    {[
+                      { v: "Low", label: "Low" },
+                      { v: "Moderate", label: "Moderate" },
+                      { v: "High", label: "High" },
+                    ].map((o) => (
+                      <button
+                        key={o.v}
+                        type="button"
+                        className={`btn ${draft.math_logic_comfort === o.v ? "btn-primary" : "btn-outline-primary"}`}
+                        onClick={() => update("math_logic_comfort", o.v as Comfort)}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
-                <div className="fw-semibold mb-2">10) Patience level *</div>
-                <div className="d-grid gap-2 mb-4">
-                  {[
-                    { v: "Low", label: "Low" },
-                    { v: "Moderate", label: "Moderate" },
-                    { v: "High", label: "High" },
-                  ].map((o) => (
-                    <button
-                      key={o.v}
-                      type="button"
-                      className={`btn text-start ${draft.patience_level === o.v ? "btn-primary" : "btn-outline-primary"}`}
-                      onClick={() => update("patience_level", o.v as Comfort)}
-                    >
-                      {o.label}
-                    </button>
-                  ))}
+                <div className="mb-3">
+                  <label className="form-label">Patience level *</label>
+                  <div className="d-flex flex-wrap gap-2">
+                    {[
+                      { v: "Low", label: "Low" },
+                      { v: "Moderate", label: "Moderate" },
+                      { v: "High", label: "High" },
+                    ].map((o) => (
+                      <button
+                        key={o.v}
+                        type="button"
+                        className={`btn ${draft.patience_level === o.v ? "btn-primary" : "btn-outline-primary"}`}
+                        onClick={() => update("patience_level", o.v as Comfort)}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
-                <div className="fw-semibold mb-2">11) Learning style *</div>
-                <div className="d-grid gap-2">
-                  {[
-                    { v: "set_and_forget", label: "Set-and-forget" },
-                    { v: "continuous", label: "Continuous learning" },
-                  ].map((o) => (
-                    <button
-                      key={o.v}
-                      type="button"
-                      className={`btn text-start ${draft.learning_style === o.v ? "btn-primary" : "btn-outline-primary"}`}
-                      onClick={() => update("learning_style", o.v as LearningStyle)}
-                    >
-                      {o.label}
-                    </button>
-                  ))}
+                <div className="mb-3">
+                  <label className="form-label">Learning style *</label>
+                  <div className="d-flex flex-wrap gap-2">
+                    {[
+                      { v: "set_and_forget", label: "Set-and-forget" },
+                      { v: "continuous", label: "Continuous learning" },
+                    ].map((o) => (
+                      <button
+                        key={o.v}
+                        type="button"
+                        className={`btn ${draft.learning_style === o.v ? "btn-primary" : "btn-outline-primary"}`}
+                        onClick={() => update("learning_style", o.v as LearningStyle)}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </>
             )}
@@ -627,70 +589,44 @@ export default function AssessmentPage() {
               <>
                 <h2 className="h5 mb-3">Goals</h2>
 
-                <div className="fw-semibold mb-2">12) Income urgency *</div>
-                <div className="d-grid gap-2 mb-4">
-                  {[
-                    { v: "quick", label: "Quick (1–3 months)" },
-                    { v: "long", label: "Long term (6+ months)" },
-                  ].map((o) => (
-                    <button
-                      key={o.v}
-                      type="button"
-                      className={`btn text-start ${draft.income_urgency === o.v ? "btn-primary" : "btn-outline-primary"}`}
-                      onClick={() => update("income_urgency", o.v as IncomeUrgency)}
-                    >
-                      {o.label}
-                    </button>
-                  ))}
+                <div className="mb-3">
+                  <label className="form-label">Income urgency *</label>
+                  <div className="d-flex flex-wrap gap-2">
+                    {[
+                      { v: "quick", label: "Quick income" },
+                      { v: "long", label: "Long-term income" },
+                    ].map((o) => (
+                      <button
+                        key={o.v}
+                        type="button"
+                        className={`btn ${draft.income_urgency === o.v ? "btn-primary" : "btn-outline-primary"}`}
+                        onClick={() => update("income_urgency", o.v as IncomeUrgency)}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
-                <div className="fw-semibold mb-2">13) Primary interest *</div>
-                <div className="d-grid gap-2">
-                  {[
-                    { v: "Build", label: "Build" },
-                    { v: "Solve", label: "Solve" },
-                    { v: "Protect", label: "Protect" },
-                    { v: "Create", label: "Create" },
-                    { v: "Connect", label: "Connect" },
-                  ].map((o) => (
-                    <button
-                      key={o.v}
-                      type="button"
-                      className={`btn text-start ${draft.primary_interest === o.v ? "btn-primary" : "btn-outline-primary"}`}
-                      onClick={() => update("primary_interest", o.v as PrimaryInterest)}
-                    >
-                      {o.label}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-
-            {/* ✅ STEP 6 */}
-            {step === 6 && (
-              <>
-                <h2 className="h5 mb-3">Where should we send your results?</h2>
-
-                <div className="row g-3">
-                  <div className="col-12">
-                    <label className="form-label">Full Name *</label>
-                    <input className="form-control" value={draft.full_name} onChange={(e) => update("full_name", e.target.value)} />
-                  </div>
-
-                  <div className="col-12 col-md-6">
-                    <label className="form-label">Email *</label>
-                    <input className="form-control" value={draft.email} onChange={(e) => update("email", e.target.value)} />
-                    {draft.email.trim() !== "" && !isValidEmail(draft.email) && (
-                      <div className="text-danger small mt-1">Please enter a valid email address.</div>
-                    )}
-                  </div>
-
-                  <div className="col-12 col-md-6">
-                    <label className="form-label">Phone *</label>
-                    <input className="form-control" value={draft.phone} onChange={(e) => update("phone", e.target.value)} />
-                    {draft.phone.trim() !== "" && !isValidPhone(draft.phone) && (
-                      <div className="text-danger small mt-1">Enter a valid phone number (10–15 digits).</div>
-                    )}
+                <div className="mb-3">
+                  <label className="form-label">Primary interest *</label>
+                  <div className="d-flex flex-wrap gap-2">
+                    {[
+                      { v: "Build", label: "Build" },
+                      { v: "Solve", label: "Solve" },
+                      { v: "Protect", label: "Protect" },
+                      { v: "Create", label: "Create" },
+                      { v: "Connect", label: "Connect" },
+                    ].map((o) => (
+                      <button
+                        key={o.v}
+                        type="button"
+                        className={`btn ${draft.primary_interest === o.v ? "btn-primary" : "btn-outline-primary"}`}
+                        onClick={() => update("primary_interest", o.v as PrimaryInterest)}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
                   </div>
                 </div>
               </>
@@ -708,15 +644,17 @@ export default function AssessmentPage() {
                   Next
                 </button>
               ) : (
-                <button className="btn btn-primary w-50" onClick={submit} disabled={loading}>
-                  {loading ? "Submitting..." : "See Preview Results"}
+                <button className="btn btn-success w-50" onClick={submit} disabled={loading}>
+                  {loading ? "Generating..." : "See My 3 Skill Matches"}
                 </button>
               )}
             </div>
+
+            <div className="text-muted small mt-3">
+              You’ll pick 1 skill on the next page, then we’ll ask where to send your full result.
+            </div>
           </div>
         </div>
-
-        <div className="text-center text-muted small mt-4">© {new Date().getFullYear()} Skill2Earn Padi</div>
       </div>
     </div>
   );
