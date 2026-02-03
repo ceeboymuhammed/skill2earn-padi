@@ -7,7 +7,7 @@ import { z } from "zod";
 
 import type { AssessmentPayload, SkillRow } from "@/lib/rulesEngine";
 import { runRecommendationPipeline } from "@/lib/rulesEngine";
-import { buildFullReportsWithGemini } from "@/lib/recommendWithGemini";
+import { buildFullReportsWithGemini } from "@/lib/recommendWithGeminiOrFallback";
 import { FullResultsResponseSchema } from "@/lib/llmSchema";
 
 const supabase = createClient(
