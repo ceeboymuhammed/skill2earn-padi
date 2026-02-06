@@ -63,6 +63,24 @@ type AssessmentStored = {
   phone?: string;
 };
 
+type ProviderSearchContext = {
+  version: "v1";
+  session_id: string;
+  skill_code: string;
+
+  country: "Nigeria";
+  state: string;
+  city: string;
+  area: string;
+  address_text: string;
+
+  // Optional enhancements (not required for MVP)
+  lat: number | null;
+  lng: number | null;
+
+  created_at_iso: string;
+};
+
 const PREVIEW_KEY = "s2e_last_preview";
 const ASSESS_KEY = "s2e_last_assessment";
 const SESSION_KEY = "s2e_session_id";
@@ -70,6 +88,9 @@ const FULL_KEY = "s2e_last_full";
 
 // for results page
 const SELECTED_RESULT_KEY = "s2e_selected_result_v1";
+
+// ✅ new: provider search input store
+const PROVIDER_SEARCH_CONTEXT_KEY = "s2e_provider_search_context_v1";
 
 function safeParse<T>(raw: string | null): T | null {
   if (!raw) return null;
@@ -84,13 +105,41 @@ function isObj(x: unknown): x is Record<string, unknown> {
   return !!x && typeof x === "object";
 }
 
+function isPreviewRec(x: unknown): x is PreviewRec {
+  if (!isObj(x)) return false;
+  if (typeof x.skill_code !== "string") return false;
+  if (typeof x.skill_name !== "string") return false;
+  if (typeof x.score !== "number") return false;
+  if (!Array.isArray(x.teaser)) return false;
+  return x.teaser.every((t) => typeof t === "string");
+}
+
 function isPreviewResp(x: unknown): x is PreviewResp {
   return (
     isObj(x) &&
     x.mode === "preview" &&
     typeof x.session_id === "string" &&
-    Array.isArray(x.recommendations)
+    typeof x.unlocked === "boolean" &&
+    Array.isArray(x.recommendations) &&
+    x.recommendations.every(isPreviewRec)
   );
+}
+
+function isFullRec(x: unknown): x is FullRec {
+  if (!isObj(x)) return false;
+  if (typeof x.skill_code !== "string") return false;
+  if (typeof x.skill_name !== "string") return false;
+  if (typeof x.score !== "number") return false;
+
+  const reasons = x.reasons;
+  const badges = x.badges;
+  const warnings = x.warnings;
+
+  if (!Array.isArray(reasons) || !reasons.every((r) => typeof r === "string")) return false;
+  if (!Array.isArray(badges) || !badges.every((b) => typeof b === "string")) return false;
+  if (!Array.isArray(warnings) || !warnings.every((w) => typeof w === "string")) return false;
+
+  return true;
 }
 
 function isFullResp(x: unknown): x is FullResp {
@@ -98,7 +147,9 @@ function isFullResp(x: unknown): x is FullResp {
     isObj(x) &&
     x.mode === "full" &&
     typeof x.session_id === "string" &&
-    Array.isArray(x.recommendations)
+    typeof x.unlocked === "boolean" &&
+    Array.isArray(x.recommendations) &&
+    x.recommendations.every(isFullRec)
   );
 }
 
@@ -117,6 +168,15 @@ function getApiErrorMessage(json: unknown): string | null {
 function scoreToPct(score: number) {
   if (!Number.isFinite(score)) return 0;
   return score > 1 ? Math.round(score) : Math.round(score * 100);
+}
+
+function norm(s: string) {
+  return s.trim();
+}
+
+function buildAddressText(area: string, city: string, state: string) {
+  const parts = [area, city, state, "Nigeria"].map((x) => x.trim()).filter(Boolean);
+  return parts.join(", ");
 }
 
 type Commence = "NOW" | "WITHIN_3_MONTHS";
@@ -140,6 +200,7 @@ export default function PreviewPage() {
   // ✅ Default YES
   const [wantsTrainingCentre, setWantsTrainingCentre] = useState(true);
 
+  // optional GPS/manual location enhancements
   const [geoLoading, setGeoLoading] = useState(false);
   const [lat, setLat] = useState<number | null>(null);
   const [lng, setLng] = useState<number | null>(null);
@@ -183,9 +244,18 @@ export default function PreviewPage() {
     setEmail(a?.email ?? "");
     setPhone(a?.phone ?? "");
 
-    // Default-select first recommendation (so UX feels smooth)
-    if (r.recommendations?.length) {
+    // Default-select first recommendation
+    if (r.recommendations.length) {
       setSelectedSkillCode(r.recommendations[0].skill_code);
+    }
+
+    // If they already provided city/area in assessment, prefill text helper
+    const aCity = norm(a?.city ?? "");
+    const aArea = norm(a?.area ?? "");
+    const aState = norm(a?.state ?? "");
+    const derived = buildAddressText(aArea, aCity, aState);
+    if (derived && derived !== "Nigeria") {
+      setLocationText(derived);
     }
   }, []);
 
@@ -198,6 +268,36 @@ export default function PreviewPage() {
     if (!selectedSkillCode) return null;
     return top3.find((x) => x.skill_code === selectedSkillCode) ?? null;
   }, [top3, selectedSkillCode]);
+
+  // ✅ Core: persist provider-search context whenever skill/location is available
+  useEffect(() => {
+    if (!resp?.session_id) return;
+    if (!assessment) return;
+    if (!selectedSkillCode) return;
+
+    const city = norm(assessment.city ?? "");
+    const area = norm(assessment.area ?? "");
+    const state = norm(assessment.state ?? "");
+
+    // only store if we have at least city+area (your flow says user provides these)
+    if (!city || !area) return;
+
+    const ctx: ProviderSearchContext = {
+      version: "v1",
+      session_id: resp.session_id,
+      skill_code: selectedSkillCode,
+      country: "Nigeria",
+      state,
+      city,
+      area,
+      address_text: buildAddressText(area, city, state),
+      lat,
+      lng,
+      created_at_iso: new Date().toISOString(),
+    };
+
+    localStorage.setItem(PROVIDER_SEARCH_CONTEXT_KEY, JSON.stringify(ctx));
+  }, [resp?.session_id, assessment, selectedSkillCode, lat, lng]);
 
   function requestLocation() {
     setGeoLoading(true);
@@ -231,12 +331,15 @@ export default function PreviewPage() {
     if (!email.trim()) return "Please enter your email.";
     if (!phone.trim()) return "Please enter your phone number.";
 
+    // ✅ Your updated rule: user already provided city/area before final result
+    // So if they want training centre, we only require assessment city/area.
     if (wantsTrainingCentre) {
-      const hasCoords = lat !== null && lng !== null;
-      const hasText = locationText.trim().length > 2;
-      if (!hasCoords && !hasText) {
-        return "Please share your location (GPS) or type your city/area to find a training centre.";
+      const city = norm(assessment?.city ?? "");
+      const area = norm(assessment?.area ?? "");
+      if (!city || !area) {
+        return "Your location (city/area) is missing. Please retake the assessment and enter your city/area.";
       }
+      // GPS/manual text are optional enhancements (not mandatory)
     }
 
     return null;
@@ -290,15 +393,40 @@ export default function PreviewPage() {
 
     setSendLoading(true);
     try {
-      // ✅ Load full only when sending
       const selectedFull = await fetchFullAndPickSelected(selectedSkillCode);
+
+      const state = norm(assessment.state ?? "");
+      const city = norm(assessment.city ?? "");
+      const area = norm(assessment.area ?? "");
+
+      // ✅ Build provider search context (authoritative source is assessment)
+      const providerCtx: ProviderSearchContext | null =
+        city && area
+          ? {
+              version: "v1",
+              session_id: resp.session_id,
+              skill_code: selectedSkillCode,
+              country: "Nigeria",
+              state,
+              city,
+              area,
+              address_text: buildAddressText(area, city, state),
+              lat,
+              lng,
+              created_at_iso: new Date().toISOString(),
+            }
+          : null;
+
+      if (providerCtx) {
+        localStorage.setItem(PROVIDER_SEARCH_CONTEXT_KEY, JSON.stringify(providerCtx));
+      }
 
       const body = {
         session_id: resp.session_id,
 
-        state: assessment.state ?? "",
-        city: assessment.city ?? "",
-        area: assessment.area ?? "",
+        state,
+        city,
+        area,
 
         full_name: fullName.trim(),
         email: email.trim(),
@@ -307,13 +435,17 @@ export default function PreviewPage() {
         commence,
         wants_training_centre: wantsTrainingCentre,
 
+        // Optional GPS/manual enhancement
         location: wantsTrainingCentre
           ? {
               lat,
               lng,
-              text: locationText.trim() || undefined,
+              text: norm(locationText) || undefined,
             }
           : null,
+
+        // ✅ key integration: include provider search context for downstream APIs (optional but useful)
+        provider_search_context: wantsTrainingCentre ? providerCtx : null,
 
         preview_recommendations: top3,
         selected_recommendation: selectedFull,
@@ -342,6 +474,7 @@ export default function PreviewPage() {
           commence,
           wants_training_centre: wantsTrainingCentre,
           location: body.location,
+          provider_search_context: body.provider_search_context,
           contact: { full_name: body.full_name, email: body.email, phone: body.phone },
           preview: top3,
         })
@@ -374,6 +507,12 @@ export default function PreviewPage() {
     );
   }
 
+  const cityDisplay = norm(assessment?.city ?? "");
+  const areaDisplay = norm(assessment?.area ?? "");
+  const stateDisplay = norm(assessment?.state ?? "");
+  const locationSummary =
+    cityDisplay && areaDisplay ? `${areaDisplay}, ${cityDisplay}${stateDisplay ? ", " + stateDisplay : ""}` : "";
+
   return (
     <div className="bg-light min-vh-100">
       <div className="bg-white border-bottom">
@@ -382,6 +521,12 @@ export default function PreviewPage() {
           <div className="text-muted small">
             Select <strong>one</strong> skill. Then fill your details and send to see the full breakdown.
           </div>
+
+          {locationSummary ? (
+            <div className="mt-2 small text-muted">
+              Your location: <strong>{locationSummary}</strong>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -396,15 +541,13 @@ export default function PreviewPage() {
                   <div className="card-body">
                     <div className="d-flex align-items-start justify-content-between">
                       <div className="fw-bold">{r.skill_name}</div>
-                      <span className="badge bg-primary-subtle text-primary">
-                        {scoreToPct(r.score)}%
-                      </span>
+                      <span className="badge bg-primary-subtle text-primary">{scoreToPct(r.score)}%</span>
                     </div>
 
-                    {r.teaser?.length ? (
+                    {r.teaser.length ? (
                       <ul className="mt-3 mb-0 small text-muted">
                         {r.teaser.slice(0, 3).map((t, i) => (
-                          <li key={i}>{t}</li>
+                          <li key={`${r.skill_code}-teaser-${i}`}>{t}</li>
                         ))}
                       </ul>
                     ) : (
@@ -433,9 +576,7 @@ export default function PreviewPage() {
             <div className="card-body p-4">
               <div className="fw-semibold mb-2">Selected Skill</div>
 
-              {!selectedPreview && (
-                <div className="text-muted">Select one of the 3 recommendations above.</div>
-              )}
+              {!selectedPreview && <div className="text-muted">Select one of the 3 recommendations above.</div>}
 
               {selectedPreview && (
                 <>
@@ -446,12 +587,12 @@ export default function PreviewPage() {
                     </span>
                   </div>
 
-                  {selectedPreview.teaser?.length ? (
+                  {selectedPreview.teaser.length ? (
                     <>
                       <div className="mt-3 fw-semibold">Quick reasons</div>
                       <ul className="mb-0">
                         {selectedPreview.teaser.slice(0, 3).map((x, i) => (
-                          <li key={i}>{x}</li>
+                          <li key={`${selectedPreview.skill_code}-reason-${i}`}>{x}</li>
                         ))}
                       </ul>
                     </>
@@ -530,17 +671,28 @@ export default function PreviewPage() {
                       {wantsTrainingCentre ? "Yes, connect me" : "No, not now"}
                     </label>
                   </div>
+                  {wantsTrainingCentre && locationSummary ? (
+                    <div className="small text-muted mt-1">
+                      We’ll use <strong>{locationSummary}</strong> to find centres near you.
+                    </div>
+                  ) : null}
                 </div>
               </div>
 
+              {/* Optional GPS/manual enhancements */}
               {wantsTrainingCentre && (
                 <>
                   <hr className="my-4" />
                   <div className="row g-3">
                     <div className="col-12 col-md-6">
-                      <label className="form-label">Share your location (recommended)</label>
+                      <label className="form-label">Share your location (optional, improves accuracy)</label>
                       <div className="d-flex gap-2">
-                        <button className="btn btn-outline-primary" type="button" onClick={requestLocation} disabled={geoLoading}>
+                        <button
+                          className="btn btn-outline-primary"
+                          type="button"
+                          onClick={requestLocation}
+                          disabled={geoLoading}
+                        >
                           {geoLoading ? "Getting location…" : "Use my current location"}
                         </button>
                         <div className="text-muted small d-flex align-items-center">
@@ -550,13 +702,16 @@ export default function PreviewPage() {
                     </div>
 
                     <div className="col-12 col-md-6">
-                      <label className="form-label">Or type your city/area</label>
+                      <label className="form-label">Location details (optional)</label>
                       <input
                         className="form-control"
                         value={locationText}
                         onChange={(e) => setLocationText(e.target.value)}
                         placeholder="e.g. Ikeja, Lagos"
                       />
+                      <div className="small text-muted mt-1">
+                        This is optional. Your assessment location is already enough to proceed.
+                      </div>
                     </div>
                   </div>
                 </>
@@ -564,11 +719,7 @@ export default function PreviewPage() {
 
               <hr className="my-4" />
 
-              <button
-                className="btn btn-success w-100"
-                onClick={sendResult}
-                disabled={sendLoading || !selectedSkillCode}
-              >
+              <button className="btn btn-success w-100" onClick={sendResult} disabled={sendLoading || !selectedSkillCode}>
                 {sendLoading ? "Sending…" : "Send My Selected Skill Result"}
               </button>
 
