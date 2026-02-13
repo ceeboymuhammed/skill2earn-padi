@@ -352,7 +352,7 @@ export default function AssessmentPage() {
                     {[
                       { v: "none", label: "None" },
                       { v: "smartphone_only", label: "Smartphone only" },
-                      { v: "laptop_pc", label: "Laptop/PC" },
+                      { v: "laptop_pc", label: "Laptop/Smartphone" },
                     ].map((o) => (
                       <button
                         key={o.v}
